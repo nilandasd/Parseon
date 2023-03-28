@@ -53,7 +53,7 @@ struct Item {
     la: Vec<Symbol>,
 }
 
-struct Bovidae {
+pub struct Bovidae {
     prods: Vec<Prod>,
     states: Vec<State>,
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
