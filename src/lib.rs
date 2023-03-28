@@ -59,7 +59,7 @@ struct Bovidae {
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
     epsilon_symbols: Vec<Symbol>,
     action_table: Vec<Vec<Action>>,
-    current_state: StateID,
+    state_stack: Vec<StateID>,
     tokens: Vec<Token>,
 }
 
@@ -70,6 +70,7 @@ impl Prod {
         new_body.push(Symbol::Cursor);
 
         for sym in self.body.iter() {
+            if *sym == Symbol::Epsilon { continue; }
             new_body.push(*sym);
         }
 
@@ -106,6 +107,10 @@ impl State {
         }
 
         possible_moves
+    }
+     
+    pub fn remove_nonkernel_items(&mut self) {
+        self.items = self.items.iter().filter(|i| i.is_kernel()).cloned().collect();
     }
 }
 
@@ -179,8 +184,8 @@ impl Bovidae {
             states: Vec::<State>::new(),
             prop_table: Vec::<((StateID, usize), (StateID, usize))>::new(),
             epsilon_symbols: Vec::<Symbol>::new(),
-            current_state: 0,
             action_table: Vec::<Vec<Action>>::new(),
+            state_stack: Vec::<StateID>::new(),
             tokens: Vec::<Token>::new(),
         }
     }
@@ -206,34 +211,73 @@ impl Bovidae {
         self.prods.push(Prod { head, body });
     }
 
-    pub fn set_tokens(&mut self, strs: &Vec<&str>) {
-        for s in strs {
-            self.set_token(s);
-        }
-    }
-
-    pub fn set_token(&mut self, string: &str) {
+    pub fn set_token(&mut self, string: &str) -> TokenID {
         for tok in self.tokens.iter() {
             if tok.string == string {
                 panic!("Token '{}' was defined twice.", string);
             }
         }
 
+        let id = self.tokens.len();
+
         self.tokens.push(
             Token {
-                id: self.tokens.len(),
+                id,
                 string: string.to_string()
             });
+
+        id
     }
 
-    fn get_token_id(&self, tok_str: &str) -> TokenID {
+    pub fn get_token_id(&mut self, tok_str: &str) -> TokenID {
         for tok in self.tokens.iter() {
             if tok.string == *tok_str {
                 return tok.id;
             }
         }
 
-        panic!("unreachable");
+        self.set_token(tok_str)
+    }
+
+    pub fn parse(&mut self, tokens: &Vec<TokenID>) -> Result<(), ()> {
+        self.state_stack.push(0);
+
+        let mut token_idx = 0;
+        let mut reduction_token = 0;
+        let mut reduction_flag = false;
+
+        while token_idx <= tokens.len() {
+            let current_state = *self.state_stack.last().unwrap();
+            let action: &Action;
+            if token_idx == tokens.len() {
+                action = &Action::Accept;
+            } else if reduction_flag {
+                reduction_flag = false;
+                action = &self.action_table[current_state][reduction_token];
+            } else {
+                let token = tokens[token_idx];
+                action = &self.action_table[current_state][token];
+            }
+
+            match action {
+                Action::Accept => return Ok(()),
+                Action::Error => return Err(()),
+                Action::Goto(sid) => self.state_stack.push(*sid),
+                Action::Shift(sid) => {
+                    token_idx += 1;
+                    self.state_stack.push(*sid);
+                }
+                Action::Reduce(pop_count, tid) => {
+                    for _ in 0..*pop_count {
+                        self.state_stack.pop();
+                    }
+                    reduction_token = *tid;
+                    reduction_flag = true;
+                }
+            }
+        }
+
+        return Err(())
     }
 
     // 1. build LR(0) items
@@ -245,6 +289,7 @@ impl Bovidae {
         self.create_states();
         self.build_prop_table();
         self.prop_lookaheads();
+        self.la_close_kernels();
         self.create_action_table();
         self.clean();
     }
@@ -372,43 +417,31 @@ impl Bovidae {
     }
 
     fn get_prod_id(&self, item: &Item) -> ProdID {
-        let mut result = -1;
+        let item_body: Vec<Symbol> = item.body.clone().iter().filter(|s| **s != Symbol::Cursor).cloned().collect();
 
         for (idx, prod) in self.prods.iter().enumerate() {
-            if prod.head != item.head || prod.body.len() != item.body.len() - 1 { continue; }
-
-            let mut x = 0;
-            let mut y = 0;
-
-            let mut match_flag = true;
-            loop {
-                if item.body[x] == Symbol::Cursor {
-                    x += 1;
-                }
-
-                if x >= item.body.len() && y >= prod.body.len() { break; }
-
-                if item.body[x] != prod.body[y] {
-                    match_flag = false;
-                    break;
-                }
-
-                x += 1;
-                y += 1;
-            }
-
-            if match_flag { 
-                result = idx as i32;
-                break;
+            if prod.body[0] == Symbol::Epsilon && item_body.len() == 0 && prod.head == item.head {
+                return idx;
+            } else if prod.head == item.head && prod.body == item_body {
+                return idx;
             }
         }
 
+        panic!("PARSING ERROR: UNABLE TO FIND PRODUCTION")
+    }
 
-        if result == -1 {
-            panic!("PARSING ERROR: UNABLE TO FIND PRODUCTION")
+    fn la_close_kernels(&mut self) {
+        for i in 0..self.states.len() {
+            self.states[i].remove_nonkernel_items();
+
+            let closure = self.la_closure(&self.states[i].items);
+
+            for item in closure {
+                if item.is_kernel() { continue; }
+
+                self.states[i].items.push(item);
+            }
         }
-
-        result as usize
     }
 
     fn prop_lookaheads(&mut self) {
@@ -436,7 +469,10 @@ impl Bovidae {
             for col in 0..self.states[row].items.len() {
                 if !self.states[row].items[col].is_kernel() { continue; }
 
-                let la_items = self.la_closure(&self.states[row].items[col]);
+                let mut modified_kernel_item = self.states[row].items[col].clone();
+                modified_kernel_item.la = vec![Symbol::DNE];
+
+                let la_items = self.la_closure(&vec![modified_kernel_item]);
 
                 for la_item in la_items.iter() {
                     if la_item.expects().is_none() { continue; }
@@ -455,11 +491,8 @@ impl Bovidae {
         }
     }
 
-    fn la_closure(&self, init_item: &Item) -> Vec<Item> {
-        let mut item_without_la = init_item.clone();
-        item_without_la.la = vec![Symbol::DNE];
-
-        let mut closure_items = vec![item_without_la];
+    fn la_closure(&self, items_to_close: &Vec<Item>) -> Vec<Item> {
+        let mut closure_items = items_to_close.clone();
         let mut checked_items = 0;
 
         while checked_items != closure_items.len() {
@@ -470,7 +503,8 @@ impl Bovidae {
                 if expected_symbol.is_none() { continue; }
 
                 for la in closure_items[i].la.clone().iter() {
-                    let lookaheads = self.first(&closure_items[i].postfix(*la), &vec![]);
+                    let lookaheads: Vec<Symbol> = self.first(&closure_items[i].postfix(*la), &vec![]).iter()
+                    .filter(|s| **s != Symbol::Epsilon).cloned().collect();
 
                     for prod in self.get_prods(expected_symbol.unwrap()).iter() {
                         let mut new_item = prod.to_item();
@@ -707,7 +741,6 @@ mod tests {
     #[test]
     fn it_works() {
         let mut bovidae = Bovidae::new();
-        bovidae.set_tokens(&vec!["E", "T", "F", "+", "*", "(", "id", ")"]);
         bovidae.set_prods(&vec![
             ("E", &vec!["E", "+", "T"]),
             ("E", &vec!["T"]          ),
@@ -717,30 +750,43 @@ mod tests {
             ("F", &vec!["id"]         ),
         ]);
         bovidae.generate_parser();
-        bovidae.print_action_table();
+        //bovidae.print_action_table();
 
-        assert!(true);
+        let id = bovidae.get_token_id("id");
+        let plus = bovidae.get_token_id("+");
+        let left_paren = bovidae.get_token_id("(");
+        let right_paren = bovidae.get_token_id(")");
+
+        let mut tokens = vec![id, plus, left_paren, id, right_paren];
+
+        assert!(bovidae.parse(&mut tokens).is_ok());
     }
 
     #[test]
     fn it_works2() {
         let mut bovidae = Bovidae::new();
-        bovidae.set_tokens(&vec!["c", "d", "S", "C"]);
         bovidae.set_prods(&vec![
             ("S", &vec!["C", "C"]),
             ("C", &vec!["c", "C"]),
             ("C", &vec!["d"]),
         ]);
         bovidae.generate_parser();
-        bovidae.print_action_table();
+        //bovidae.print_action_table();
+        let c = bovidae.get_token_id("c");
+        let d = bovidae.get_token_id("d");
 
-        assert!(true);
+        let mut tokens = vec![c, c, c, c, c, d, c, d];
+
+        assert!(bovidae.parse(&mut tokens).is_ok());
+
+        let mut tokens = vec![c, d, c, d, c];
+
+        assert!(bovidae.parse(&mut tokens).is_err());
     }
 
     #[test]
     fn it_works3() {
         let mut bovidae = Bovidae::new();
-        bovidae.set_tokens(&vec!["S", "L", "R", "=", "*", "id"]);
         bovidae.set_prods(&vec![
             ("S", &vec!["L", "=", "R"]),
             ("S", &vec!["R"]),
@@ -749,8 +795,82 @@ mod tests {
             ("R", &vec!["L"]),
         ]);
         bovidae.generate_parser();
-        bovidae.print_action_table();
+        //bovidae.print_action_table();
 
-        assert!(true);
+        let eq = bovidae.get_token_id("=");
+        let times = bovidae.get_token_id("*");
+        let id = bovidae.get_token_id("id");
+
+        let mut tokens = vec![times, id, eq, times, id];
+
+        assert!(bovidae.parse(&mut tokens).is_ok());
+
+        let mut tokens = vec![times, id, eq, times, id, id];
+
+        assert!(bovidae.parse(&mut tokens).is_err());
+    }
+
+    #[test]
+    fn it_works4() {
+        let mut bovidae = Bovidae::new();
+        bovidae.set_prods(&vec![
+            ("S", &vec!["s"]),
+            ("S", &vec!["i", "S", "t", "S"]),
+            ("S", &vec!["i", "S", "t", "S", "e", "S"]),
+        ]);
+        bovidae.generate_parser();
+        //bovidae.print_action_table();
+
+        let i = bovidae.get_token_id("i");
+        let t = bovidae.get_token_id("t");
+        let e = bovidae.get_token_id("e");
+        let s = bovidae.get_token_id("s");
+
+        let mut tokens = vec![i, s, t, s, e, s];
+
+        assert!(bovidae.parse(&mut tokens).is_ok());
+
+        let mut tokens = vec![i, s, t, s, i, s];
+
+        assert!(bovidae.parse(&mut tokens).is_err());
+    }
+
+    #[test]
+    fn it_works5() {
+        let mut bovidae = Bovidae::new();
+        bovidae.set_prods(&vec![
+            ("S", &vec!["A", "B"]),
+            ("A", &vec!["a", "A"]),
+            ("A", &vec![]),
+            ("B", &vec!["b", "B"]),
+            ("B", &vec![]),
+        ]);
+        bovidae.generate_parser();
+        //bovidae.print_action_table();
+
+        let a = bovidae.get_token_id("a");
+        let b = bovidae.get_token_id("b");
+
+        let accept_strings: Vec<Vec<TokenID>> = vec![
+            vec![a, a, b, b],
+            vec![a, b],
+            vec![a, a],
+            vec![b, b],
+            vec![],
+        ];
+
+        let reject_strings: Vec<Vec<TokenID>> = vec![
+            vec![b, a],
+            vec![a, b, a],
+            vec![a, b, a, b],
+        ];
+
+        for s in accept_strings {
+            assert!(bovidae.parse(&s).is_ok());
+        }
+
+        for s in reject_strings {
+            assert!(bovidae.parse(&s).is_err());
+        }
     }
 }
