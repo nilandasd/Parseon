@@ -2,6 +2,12 @@
 name = "bovidae"
 version = "0.1.0"
 edition = "2021"
+authors = ["Niland Schumacher <naschuma@ucsc.edu>"]
+description = "Yet another LALR(1) parser generator"
+homepage = "https://github.com/nilandasd/bovidae"
+include = ["/src"]
+readme = "README.md"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
