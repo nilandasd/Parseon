@@ -304,7 +304,7 @@ impl Bovidae {
         for goto in state.gotos.iter() {
             let goto_state_id = goto.1;
             if let Symbol::Token(tid) = goto.0 {
-                if self.get_prods(goto.0).is_empty() {
+                if self.is_terminal(goto.0) {
                     action_table_row[tid] = Action::Shift(goto_state_id);
                 } else {
                     action_table_row[tid] = Action::Goto(goto_state_id);
@@ -365,8 +365,8 @@ impl Bovidae {
             }
         }
 
-        for reduction in reductions.iter() {
-            action_table_row[reduction.1] = reduction.2.clone();
+        for reduction in reductions {
+            action_table_row[reduction.1] = reduction.2;
         }
     }
 
@@ -417,7 +417,7 @@ impl Bovidae {
     }
 
     fn get_prod_id(&self, item: &Item) -> ProdID {
-        let item_body: Vec<Symbol> = item.body.clone().iter().filter(|s| **s != Symbol::Cursor).cloned().collect();
+        let item_body: Vec<Symbol> = item.body.iter().filter(|s| **s != Symbol::Cursor).cloned().collect();
 
         for (idx, prod) in self.prods.iter().enumerate() {
             if prod.body[0] == Symbol::Epsilon && item_body.len() == 0 && prod.head == item.head {
@@ -454,11 +454,12 @@ impl Bovidae {
                 let src_coords = prop.0;
                 let target_coords = prop.1;
 
-                for la in self.states[src_coords.0].items[src_coords.1].la.clone().iter() {
+                for i in 0..self.states[src_coords.0].items[src_coords.1].la.len() {
+                    let la = self.states[src_coords.0].items[src_coords.1].la[i];
                     if self.states[target_coords.0].items[target_coords.1].la.contains(&la) { continue; }
 
                     addition_flag = true;
-                    self.states[target_coords.0].items[target_coords.1].la.push(*la);
+                    self.states[target_coords.0].items[target_coords.1].la.push(la);
                 }
             }
         }
@@ -502,9 +503,12 @@ impl Bovidae {
 
                 if expected_symbol.is_none() { continue; }
 
-                for la in closure_items[i].la.clone().iter() {
-                    let lookaheads: Vec<Symbol> = self.first(&closure_items[i].postfix(*la), &vec![]).iter()
-                    .filter(|s| **s != Symbol::Epsilon).cloned().collect();
+                for k in 0..closure_items[i].la.len() {
+                    let la = closure_items[i].la[k];
+                    let lookaheads: Vec<Symbol> = self.first(&closure_items[i].postfix(la), &vec![])
+                        .into_iter()
+                        .filter(|s| *s != Symbol::Epsilon)
+                        .collect();
 
                     for prod in self.get_prods(expected_symbol.unwrap()).iter() {
                         let mut new_item = prod.to_item();
@@ -652,7 +656,7 @@ impl Bovidae {
                 checked_count += 1;
 
                 for sym in self.states[i].possible_moves().iter() {
-                    let new_state_kernel = self.canonical_goto(&self.states[i].items.clone(), *sym);
+                    let new_state_kernel = self.canonical_goto(&self.states[i].items, *sym);
                     let new_state_items = self.canonical_closure(&new_state_kernel);
                     let new_state = State {
                         items: new_state_items,
@@ -721,16 +725,24 @@ impl Bovidae {
         result
     }
 
-    fn get_prods(&self, head: Symbol) -> Vec<Prod> {
-        let mut result = Vec::<Prod>::new();
+    fn get_prods(&self, head: Symbol) -> Vec<&Prod> {
+        let mut result = Vec::<&Prod>::new();
 
         for prod in self.prods.iter() {
             if prod.head == head {
-                result.push(prod.clone());
+                result.push(prod);
             }
         }
 
         result
+    }
+
+    fn is_terminal(&self, head: Symbol) -> bool {
+        for prod in self.prods.iter() {
+            if prod.head == head { return false; }
+        }
+
+        return true;
     }
 }
 
