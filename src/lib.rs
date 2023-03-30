@@ -6,20 +6,24 @@ type StateID = usize;
 type TokenID = usize;
 type ProdID = usize;
 
-struct Token {
-    id: TokenID,
-    string: String,
-}
-
 struct ParsingError {
 
+}
+
+pub trait BovidaeToken {
+    fn bovidae_token_id(&self) -> TokenID;
+}
+
+pub trait BovidaeObserver {
+    fn on_shift(&mut self, token: &dyn BovidaeToken);
+    fn on_reduction(&mut self, prod: &Prod);
 }
 
 #[derive(Clone)]
 enum Action {
     Accept,
     Error,
-    Reduce(usize, ProdID),
+    Reduce(usize, TokenID, ProdID),
     Shift(StateID),
     Goto(StateID),
 }
@@ -35,7 +39,7 @@ enum Symbol {
 }
 
 #[derive(Clone)]
-struct Prod {
+pub struct Prod {
     head: Symbol,
     body: Vec<Symbol>,
 }
@@ -53,18 +57,19 @@ struct Item {
     la: Vec<Symbol>,
 }
 
-pub struct Bovidae {
+pub struct Bovidae<'a> {
     prods: Vec<Prod>,
     states: Vec<State>,
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
     epsilon_symbols: Vec<Symbol>,
     action_table: Vec<Vec<Action>>,
     state_stack: Vec<StateID>,
-    tokens: Vec<Token>,
+    tokens: Vec<String>,
+    observer: Option<&'a mut dyn BovidaeObserver>,
 }
 
 impl Prod {
-    pub fn to_item(&self) -> Item {
+    fn to_item(&self) -> Item {
         let mut new_body = Vec::<Symbol>::new();
 
         new_body.push(Symbol::Cursor);
@@ -177,7 +182,7 @@ impl Item {
     }
 }
 
-impl Bovidae {
+impl<'a> Bovidae<'a> {
     pub fn new() -> Self {
         Self {
             prods: Vec::<Prod>::new(),
@@ -186,7 +191,8 @@ impl Bovidae {
             epsilon_symbols: Vec::<Symbol>::new(),
             action_table: Vec::<Vec<Action>>::new(),
             state_stack: Vec::<StateID>::new(),
-            tokens: Vec::<Token>::new(),
+            tokens: Vec::<String>::new(),
+            observer: None,
         }
     }
 
@@ -197,11 +203,17 @@ impl Bovidae {
     }
 
     pub fn set_prod(&mut self, head_str: &str, body_strs: &Vec<&str>) {
-        let head = Symbol::Token(self.get_token_id(head_str));
+        let head = match self.get_token_id(head_str) {
+            Some(id) => Symbol::Token(id),
+            None => Symbol::Token(self.set_token(head_str)),
+        };
         let mut body = Vec::<Symbol>::new();
 
         for b in body_strs.iter() {
-           body.push(Symbol::Token(self.get_token_id(b))) ;
+            match self.get_token_id(b) {
+                Some(id) => body.push(Symbol::Token(id)),
+                None => body.push(Symbol::Token(self.set_token(b))),
+            }
         }
 
         if body_strs.is_empty() {
@@ -212,34 +224,34 @@ impl Bovidae {
     }
 
     pub fn set_token(&mut self, string: &str) -> TokenID {
-        for tok in self.tokens.iter() {
-            if tok.string == string {
+        for s in self.tokens.iter() {
+            if s == string {
                 panic!("Token '{}' was defined twice.", string);
             }
         }
 
         let id = self.tokens.len();
 
-        self.tokens.push(
-            Token {
-                id,
-                string: string.to_string()
-            });
+        self.tokens.push(string.to_string());
 
         id
     }
 
-    pub fn get_token_id(&mut self, tok_str: &str) -> TokenID {
-        for tok in self.tokens.iter() {
-            if tok.string == *tok_str {
-                return tok.id;
+    pub fn set_observer(&mut self, observer: &'a mut dyn BovidaeObserver) {
+        self.observer = Some(observer);
+    }
+
+    pub fn get_token_id(&mut self, s: &str) -> Option<TokenID> {
+        for (idx, token_name) in self.tokens.iter().enumerate() {
+            if *token_name == *s {
+                return Some(idx);
             }
         }
 
-        self.set_token(tok_str)
+        None
     }
 
-    pub fn parse(&mut self, tokens: &Vec<TokenID>) -> Result<(), ()> {
+    pub fn parse(&mut self, tokens: &Vec<&dyn BovidaeToken>) -> Result<(), ()> {
         self.state_stack.push(0);
 
         let mut token_idx = 0;
@@ -255,8 +267,8 @@ impl Bovidae {
                 reduction_flag = false;
                 action = &self.action_table[current_state][reduction_token];
             } else {
-                let token = tokens[token_idx];
-                action = &self.action_table[current_state][token];
+                let token = &tokens[token_idx];
+                action = &self.action_table[current_state][token.bovidae_token_id()];
             }
 
             match action {
@@ -264,11 +276,17 @@ impl Bovidae {
                 Action::Error => return Err(()),
                 Action::Goto(sid) => self.state_stack.push(*sid),
                 Action::Shift(sid) => {
+                    if let Some(observer) = self.observer.as_mut() {
+                        observer.on_shift(tokens[token_idx]);
+                    }
                     token_idx += 1;
                     self.state_stack.push(*sid);
                 }
-                Action::Reduce(pop_count, tid) => {
-                    for _ in 0..*pop_count {
+                Action::Reduce(body_size, tid, pid) => {
+                    if let Some(observer) = self.observer.as_mut() {
+                        observer.on_reduction(&self.prods[*pid]);
+                    }
+                    for _ in 0..*body_size {
                         self.state_stack.pop();
                     }
                     reduction_token = *tid;
@@ -291,6 +309,7 @@ impl Bovidae {
         self.prop_lookaheads();
         self.la_close_kernels();
         self.create_action_table();
+        // self.minimize action_table equivalent rows on the action table can be combined
         self.clean();
     }
 
@@ -314,17 +333,10 @@ impl Bovidae {
     }
 
     fn add_reductions(&self, action_table_row: &mut Vec<Action>, state: &State) {
-        let mut reductions = Vec::<(usize, usize, Action)>::new();
-
         for item in state.items.iter() {
             if item.expects().is_some() || item.head == Symbol::Start { continue; }
 
             for la in item.la.iter() {
-                let mut reduction_tid: TokenID = 0; // the tokenID that we reduce to ie A -> a means the reduction tid is A
-                if let Symbol::Token(item_head_tid) = item.head {
-                    reduction_tid = item_head_tid;
-                }
-
                 let action_tid: TokenID; // the symbol that we must see in the input to perform the reduction
                 if let Symbol::Token(la_tid) = la {
                     action_tid = *la_tid;
@@ -332,41 +344,25 @@ impl Bovidae {
                     action_tid = self.tokens.len();
                 }
 
-                if let Action::Shift(_) = action_table_row[action_tid] {
-                    continue; // avoid shift / reduce conflicts
+                let mut reduction_tid: TokenID = 0; // the tokenID that we reduce to ie A -> a means the reduction tid is A
+                if let Symbol::Token(item_head_tid) = item.head {
+                    reduction_tid = item_head_tid;
                 }
-
                 let this_prod_id = self.get_prod_id(&item);
+                let reduction_action = Action::Reduce(item.body.len() - 1, reduction_tid, this_prod_id);
 
-                let mut replace_idx = -1;
-                let mut add_flag = true;
-                for (idx, reduction) in reductions.iter().enumerate() {
-                    let other_prod_id = reduction.0;
-                    let action_tid = reduction.1;
-
-                    if Symbol::Token(action_tid) == *la || (Symbol::Accept == *la && action_tid == self.tokens.len()) {
-                        if this_prod_id < other_prod_id {
-                            replace_idx = idx as i16;
-                        } else {
-                            add_flag = false;
+                match action_table_row[action_tid] {
+                    Action::Reduce(_, _, other_pid) => {
+                        if this_prod_id < other_pid {
+                            action_table_row[action_tid] = reduction_action;
                         }
-                        break;
                     }
-                }
-
-                // this is to resolve reduce / reduce conflicts
-                let reduction_action = (this_prod_id, action_tid, Action::Reduce(item.body.len() - 1, reduction_tid));
-
-                if replace_idx != -1 {
-                    reductions[replace_idx as usize] = reduction_action;
-                } else if add_flag {
-                    reductions.push(reduction_action);
-                }
+                    Action::Error => {
+                        action_table_row[action_tid] = reduction_action;
+                    }
+                    _ => continue,
+                } 
             }
-        }
-
-        for reduction in reductions {
-            action_table_row[reduction.1] = reduction.2;
         }
     }
 
@@ -390,7 +386,7 @@ impl Bovidae {
         println!("\t\t----- ACTION TABLE -----");
 
         for tok in self.tokens.iter() {
-            print!("\t{} ", tok.string);
+            print!("\t{} ", tok);
         }
 
         print!("\tACCEPT");
@@ -401,7 +397,7 @@ impl Bovidae {
 
             for action in row.iter() {
                 match action {
-                    Action::Reduce(n, _) => print!("\tR{}", n),
+                    Action::Reduce(n, _, _) => print!("\tR{}", n),
                     Action::Goto(id) => print!("\tG{}", id),
                     Action::Shift(id) => print!("\tS{}", id),
                     Action::Accept => print!("\tAcc"),
@@ -750,6 +746,44 @@ impl Bovidae {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Copy)]
+    struct TestToken {
+        id: usize,
+    }
+
+    struct TestObserver {
+        shift_tracker: usize,
+        reduce_tracker: usize,
+        token_stack: Vec<TokenID>
+    }
+
+    impl BovidaeToken for TestToken {
+        fn bovidae_token_id(&self) -> usize {
+            self.id
+        }
+    }
+
+    impl BovidaeObserver for TestObserver {
+        fn on_reduction(&mut self, prod: &Prod) {
+            for i in 0..prod.body.len() {
+                self.token_stack.pop();
+            }
+
+            match prod.head {
+                Symbol::Token(tok) => self.token_stack.push(tok),
+                Symbol::Start => { self.token_stack.push(99); }
+                _ => {}
+            }
+
+            self.reduce_tracker += 1;
+        }
+
+        fn on_shift(&mut self, token: &dyn BovidaeToken) {
+            self.shift_tracker += 1;
+            self.token_stack.push(token.bovidae_token_id());
+        }
+    }
+
     #[test]
     fn it_works() {
         let mut bovidae = Bovidae::new();
@@ -764,14 +798,14 @@ mod tests {
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let id = bovidae.get_token_id("id");
-        let plus = bovidae.get_token_id("+");
-        let left_paren = bovidae.get_token_id("(");
-        let right_paren = bovidae.get_token_id(")");
+        let id = &TestToken { id: bovidae.get_token_id("id").unwrap() };
+        let plus = &TestToken { id: bovidae.get_token_id("+").unwrap() };
+        let left_paren = &TestToken { id: bovidae.get_token_id("(").unwrap() };
+        let right_paren = &TestToken { id: bovidae.get_token_id(")").unwrap() };
 
-        let mut tokens = vec![id, plus, left_paren, id, right_paren];
+        let tokens: Vec<&dyn BovidaeToken> = vec![id, plus, left_paren, id, right_paren];
 
-        assert!(bovidae.parse(&mut tokens).is_ok());
+        assert!(bovidae.parse(&tokens).is_ok());
     }
 
     #[test]
@@ -784,16 +818,16 @@ mod tests {
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
-        let c = bovidae.get_token_id("c");
-        let d = bovidae.get_token_id("d");
+        let c = &TestToken { id: bovidae.get_token_id("c").unwrap()};
+        let d = &TestToken { id: bovidae.get_token_id("d").unwrap()};
 
-        let mut tokens = vec![c, c, c, c, c, d, c, d];
+        let tokens: Vec<&dyn BovidaeToken> = vec![c, c, c, c, c, d, c, d];
 
-        assert!(bovidae.parse(&mut tokens).is_ok());
+        assert!(bovidae.parse(&tokens).is_ok());
 
-        let mut tokens = vec![c, d, c, d, c];
+        let tokens: Vec<&dyn BovidaeToken> = vec![c, d, c, d, c];
 
-        assert!(bovidae.parse(&mut tokens).is_err());
+        assert!(bovidae.parse(&tokens).is_err());
     }
 
     #[test]
@@ -809,17 +843,17 @@ mod tests {
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let eq = bovidae.get_token_id("=");
-        let times = bovidae.get_token_id("*");
-        let id = bovidae.get_token_id("id");
+        let eq = &TestToken { id: bovidae.get_token_id("=").unwrap()};
+        let times = &TestToken { id: bovidae.get_token_id("*").unwrap()};
+        let id = &TestToken { id: bovidae.get_token_id("id").unwrap()};
 
-        let mut tokens = vec![times, id, eq, times, id];
+        let tokens: Vec<&dyn BovidaeToken> = vec![times, id, eq, times, id];
 
-        assert!(bovidae.parse(&mut tokens).is_ok());
+        assert!(bovidae.parse(&tokens).is_ok());
 
-        let mut tokens = vec![times, id, eq, times, id, id];
+        let tokens: Vec<&dyn BovidaeToken> = vec![times, id, eq, times, id, id];
 
-        assert!(bovidae.parse(&mut tokens).is_err());
+        assert!(bovidae.parse(&tokens).is_err());
     }
 
     #[test]
@@ -833,18 +867,18 @@ mod tests {
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let i = bovidae.get_token_id("i");
-        let t = bovidae.get_token_id("t");
-        let e = bovidae.get_token_id("e");
-        let s = bovidae.get_token_id("s");
+        let i = &TestToken { id: bovidae.get_token_id("i").unwrap()};
+        let t = &TestToken { id: bovidae.get_token_id("t").unwrap()};
+        let e = &TestToken { id: bovidae.get_token_id("e").unwrap()};
+        let s = &TestToken { id: bovidae.get_token_id("s").unwrap()};
 
-        let mut tokens = vec![i, s, t, s, e, s];
+        let tokens: Vec<&dyn BovidaeToken> = vec![i, s, t, s, e, s];
 
-        assert!(bovidae.parse(&mut tokens).is_ok());
+        assert!(bovidae.parse(&tokens).is_ok());
 
-        let mut tokens = vec![i, s, t, s, i, s];
+        let tokens: Vec<&dyn BovidaeToken> = vec![i, s, t, s, i, s];
 
-        assert!(bovidae.parse(&mut tokens).is_err());
+        assert!(bovidae.parse(&tokens).is_err());
     }
 
     #[test]
@@ -860,10 +894,10 @@ mod tests {
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let a = bovidae.get_token_id("a");
-        let b = bovidae.get_token_id("b");
+        let a = &TestToken { id: bovidae.get_token_id("a").unwrap()};
+        let b = &TestToken { id: bovidae.get_token_id("b").unwrap()};
 
-        let accept_strings: Vec<Vec<TokenID>> = vec![
+        let accept_strings: Vec<Vec<&dyn BovidaeToken>> = vec![
             vec![a, a, b, b],
             vec![a, b],
             vec![a, a],
@@ -871,7 +905,7 @@ mod tests {
             vec![],
         ];
 
-        let reject_strings: Vec<Vec<TokenID>> = vec![
+        let reject_strings: Vec<Vec<&dyn BovidaeToken>> = vec![
             vec![b, a],
             vec![a, b, a],
             vec![a, b, a, b],
@@ -884,5 +918,89 @@ mod tests {
         for s in reject_strings {
             assert!(bovidae.parse(&s).is_err());
         }
+    }
+
+    #[test]
+    fn it_works6() {
+        let mut bovidae = Bovidae::new();
+        bovidae.set_prods(&vec![
+            ("S", &vec!["A", "B", "C"]),
+            ("A", &vec!["a", "A"]),
+            ("A", &vec!["x"]),
+            ("B", &vec!["b", "B"]),
+            ("B", &vec!["x"]),
+            ("C", &vec!["c", "C"]),
+            ("C", &vec!["x"]),
+        ]);
+        bovidae.generate_parser();
+        bovidae.print_action_table();
+
+        let a = &TestToken { id: bovidae.get_token_id("a").unwrap()};
+        let b = &TestToken { id: bovidae.get_token_id("b").unwrap()};
+        let c = &TestToken { id: bovidae.get_token_id("c").unwrap()};
+        let x = &TestToken { id: bovidae.get_token_id("x").unwrap()};
+
+        let mut observer = TestObserver {
+            reduce_tracker: 0,
+            shift_tracker: 0,
+            token_stack: Vec::<TokenID>::new(),
+        };
+
+        bovidae.set_observer(&mut observer);
+
+        let tokens: Vec<&dyn BovidaeToken> = vec![a, x, b, x, c, x];
+
+        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(observer.shift_tracker == 6);
+        assert!(observer.reduce_tracker == 4);
+    }
+
+    #[test]
+    fn it_works7() {
+        let mut bovidae = Bovidae::new();
+        bovidae.set_prods(&vec![
+            ("SS", &vec!["S", ";", "SS"]),
+            ("SS", &vec!["S", ";"]),
+
+            ("S", &vec!["let", "id", "=", "Expr"]),
+
+            ("Expr", &vec!["(", "Expr", ")"]),
+            ("Expr", &vec!["Expr", "Binop", "Expr"]),
+            ("Expr", &vec!["id"]),
+            ("Expr", &vec!["num"]),
+
+            ("Binop", &vec!["+"]),
+            ("Binop", &vec!["*"]),
+        ]);
+        bovidae.generate_parser();
+        // bovidae.print_action_table();
+
+        let lett = &TestToken { id: bovidae.get_token_id("let").unwrap()};
+        let equal = &TestToken { id: bovidae.get_token_id("=").unwrap()};
+        let l_paren = &TestToken { id: bovidae.get_token_id("(").unwrap()};
+        let r_paren = &TestToken { id: bovidae.get_token_id(")").unwrap()};
+        let num = &TestToken { id: bovidae.get_token_id("num").unwrap()};
+        let plus = &TestToken { id: bovidae.get_token_id("+").unwrap()};
+        let times = &TestToken { id: bovidae.get_token_id("*").unwrap()};
+        let id = &TestToken { id: bovidae.get_token_id("id").unwrap()};
+        let semi = &TestToken { id: bovidae.get_token_id(";").unwrap()};
+
+        let mut observer = TestObserver {
+            reduce_tracker: 0,
+            shift_tracker: 0,
+            token_stack: Vec::<TokenID>::new(),
+        };
+
+        bovidae.set_observer(&mut observer);
+
+        let tokens: Vec<&dyn BovidaeToken> = vec![
+            lett, id, equal, num, plus, l_paren, num, times, num, r_paren, semi, // let id = 1 + (2 * 3);
+            lett, id, equal, l_paren, num, times, id, r_paren, plus, num, semi, // let id = (1 * id) + 2;
+            lett, id, equal, id, semi, // let id = id;
+        ];
+
+        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(observer.shift_tracker == tokens.len());
+        // println!("{:?}", observer.token_stack);
     }
 }
