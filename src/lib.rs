@@ -57,7 +57,7 @@ struct Item {
     la: Vec<Symbol>,
 }
 
-pub struct Bovidae<'a> {
+pub struct Bovidae {
     prods: Vec<Prod>,
     states: Vec<State>,
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
@@ -65,7 +65,6 @@ pub struct Bovidae<'a> {
     action_table: Vec<Vec<Action>>,
     state_stack: Vec<StateID>,
     tokens: Vec<TokenID>,
-    observer: Option<&'a mut dyn BovidaeObserver>,
 }
 
 impl Prod {
@@ -182,7 +181,7 @@ impl Item {
     }
 }
 
-impl<'a> Bovidae<'a> {
+impl Bovidae {
     pub fn new() -> Self {
         Self {
             prods: Vec::<Prod>::new(),
@@ -192,7 +191,6 @@ impl<'a> Bovidae<'a> {
             action_table: Vec::<Vec<Action>>::new(),
             state_stack: Vec::<StateID>::new(),
             tokens: Vec::<TokenID>::new(),
-            observer: None,
         }
     }
 
@@ -229,13 +227,10 @@ impl<'a> Bovidae<'a> {
         }
     }
 
-    pub fn set_observer(&mut self, observer: &'a mut dyn BovidaeObserver) {
-        self.observer = Some(observer);
-    }
-
-    pub fn parse<T>(&mut self, tokens: &Vec<&T>) -> Result<(), ()>
+    pub fn parse<T, O>(&mut self, tokens: &Vec<&T>, observer: &mut Option<&mut O>) -> Result<(), ()>
     where
         T: BovidaeToken,
+        O: BovidaeObserver,
     {
         self.state_stack.push(0);
 
@@ -262,14 +257,14 @@ impl<'a> Bovidae<'a> {
                 Action::Error => return Err(()),
                 Action::Goto(sid) => self.state_stack.push(*sid),
                 Action::Shift(sid) => {
-                    if let Some(observer) = self.observer.as_mut() {
+                    if let Some(observer) = observer {
                         observer.on_shift(tokens[token_idx]);
                     }
                     token_idx += 1;
                     self.state_stack.push(*sid);
                 }
                 Action::Reduce(body_size, tid, pid) => {
-                    if let Some(observer) = self.observer.as_mut() {
+                    if let Some(observer) = observer {
                         let prod =  &self.prods[*pid];
                         let mut head: TokenID = 0;
                         let mut body = Vec::<TokenID>::new();
@@ -798,8 +793,9 @@ mod tests {
         let right_paren = &TestToken { id: r_paren };
 
         let tokens: Vec<&TestToken> = vec![id, plus, left_paren, id, right_paren];
+        let mut observer: Option<&mut TestObserver> = None;
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(bovidae.parse(&tokens, &mut observer).is_ok());
     }
 
     #[test]
@@ -821,11 +817,13 @@ mod tests {
 
         let tokens: Vec<&TestToken> = vec![c, c, c, c, c, d, c, d];
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        let mut observer: Option<&mut TestObserver> = None;
+
+        assert!(bovidae.parse(&tokens, &mut observer).is_ok());
 
         let tokens = vec![c, d, c, d, c];
 
-        assert!(bovidae.parse(&tokens).is_err());
+        assert!(bovidae.parse(&tokens, &mut observer).is_err());
     }
 
     #[test]
@@ -852,12 +850,13 @@ mod tests {
         let id = &TestToken { id: i};
 
         let tokens: Vec<&TestToken> = vec![times, id, eq, times, id];
+        let mut observer: Option<&mut TestObserver> = None;
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(bovidae.parse(&tokens, &mut observer).is_ok());
 
         let tokens = vec![times, id, eq, times, id, id];
 
-        assert!(bovidae.parse(&tokens).is_err());
+        assert!(bovidae.parse(&tokens, &mut observer).is_err());
     }
 
     #[test]
@@ -882,12 +881,13 @@ mod tests {
         let s = &TestToken { id: s};
 
         let tokens = vec![i, s, t, s, e, s];
+        let mut observer: Option<&mut TestObserver> = None;
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(bovidae.parse(&tokens, &mut observer).is_ok());
 
         let tokens = vec![i, s, t, s, i, s];
 
-        assert!(bovidae.parse(&tokens).is_err());
+        assert!(bovidae.parse(&tokens, &mut observer).is_err());
     }
 
     #[test]
@@ -924,13 +924,14 @@ mod tests {
             vec![a, b, a],
             vec![a, b, a, b],
         ];
+        let mut observer: Option<&mut TestObserver> = None;
 
         for s in accept_strings {
-            assert!(bovidae.parse(&s).is_ok());
+            assert!(bovidae.parse(&s, &mut observer).is_ok());
         }
 
         for s in reject_strings {
-            assert!(bovidae.parse(&s).is_err());
+            assert!(bovidae.parse(&s, &mut observer).is_err());
         }
     }
 
@@ -967,11 +968,9 @@ mod tests {
             shift_tracker: 0,
         };
 
-        bovidae.set_observer(&mut observer);
-
         let tokens: Vec<&TestToken> = vec![a, x, b, x, c, x];
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(bovidae.parse(&tokens, &mut Some(&mut observer)).is_ok());
         assert!(observer.shift_tracker == 6);
         assert!(observer.reduce_tracker == 4);
     }
@@ -1024,15 +1023,13 @@ mod tests {
             shift_tracker: 0,
         };
 
-        bovidae.set_observer(&mut observer);
-
         let tokens = vec![
             lett, id, equal, num, plus, l_paren, num, times, num, r_paren, semi, // let id = 1 + (2 * 3);
             lett, id, equal, l_paren, num, times, id, r_paren, plus, num, semi, // let id = (1 * id) + 2;
             lett, id, equal, id, semi, // let id = id;
         ];
 
-        assert!(bovidae.parse(&tokens).is_ok());
+        assert!(bovidae.parse(&tokens, &mut Some(&mut observer)).is_ok());
         assert!(observer.shift_tracker == tokens.len());
         // println!("{:?}", observer.token_stack);
     }
