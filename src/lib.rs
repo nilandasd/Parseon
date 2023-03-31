@@ -228,7 +228,10 @@ impl<'a> Bovidae<'a> {
         self.observer = Some(observer);
     }
 
-    pub fn parse(&mut self, tokens: &Vec<&dyn BovidaeToken>) -> Result<(), ()> {
+    pub fn parse<T>(&mut self, tokens: &Vec<&T>) -> Result<(), ()>
+    where
+        T: BovidaeToken,
+    {
         self.state_stack.push(0);
 
         let mut token_idx = 0;
@@ -788,7 +791,7 @@ mod tests {
         let left_paren = &TestToken { id: l_paren };
         let right_paren = &TestToken { id: r_paren };
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![id, plus, left_paren, id, right_paren];
+        let tokens: Vec<&TestToken> = vec![id, plus, left_paren, id, right_paren];
 
         assert!(bovidae.parse(&tokens).is_ok());
     }
@@ -810,11 +813,11 @@ mod tests {
         let c = &TestToken { id: c };
         let d = &TestToken { id: d };
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![c, c, c, c, c, d, c, d];
+        let tokens: Vec<&TestToken> = vec![c, c, c, c, c, d, c, d];
 
         assert!(bovidae.parse(&tokens).is_ok());
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![c, d, c, d, c];
+        let tokens = vec![c, d, c, d, c];
 
         assert!(bovidae.parse(&tokens).is_err());
     }
@@ -842,11 +845,11 @@ mod tests {
         let times = &TestToken { id: t};
         let id = &TestToken { id: i};
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![times, id, eq, times, id];
+        let tokens: Vec<&TestToken> = vec![times, id, eq, times, id];
 
         assert!(bovidae.parse(&tokens).is_ok());
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![times, id, eq, times, id, id];
+        let tokens = vec![times, id, eq, times, id, id];
 
         assert!(bovidae.parse(&tokens).is_err());
     }
@@ -872,11 +875,11 @@ mod tests {
         let e = &TestToken { id: e};
         let s = &TestToken { id: s};
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![i, s, t, s, e, s];
+        let tokens = vec![i, s, t, s, e, s];
 
         assert!(bovidae.parse(&tokens).is_ok());
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![i, s, t, s, i, s];
+        let tokens = vec![i, s, t, s, i, s];
 
         assert!(bovidae.parse(&tokens).is_err());
     }
@@ -902,7 +905,7 @@ mod tests {
         let a = &TestToken { id: a};
         let b = &TestToken { id: b};
 
-        let accept_strings: Vec<Vec<&dyn BovidaeToken>> = vec![
+        let accept_strings: Vec<Vec<&TestToken>> = vec![
             vec![a, a, b, b],
             vec![a, b],
             vec![a, a],
@@ -910,7 +913,7 @@ mod tests {
             vec![],
         ];
 
-        let reject_strings: Vec<Vec<&dyn BovidaeToken>> = vec![
+        let reject_strings: Vec<Vec<&TestToken>> = vec![
             vec![b, a],
             vec![a, b, a],
             vec![a, b, a, b],
@@ -960,7 +963,7 @@ mod tests {
 
         bovidae.set_observer(&mut observer);
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![a, x, b, x, c, x];
+        let tokens: Vec<&TestToken> = vec![a, x, b, x, c, x];
 
         assert!(bovidae.parse(&tokens).is_ok());
         assert!(observer.shift_tracker == 6);
@@ -1017,7 +1020,7 @@ mod tests {
 
         bovidae.set_observer(&mut observer);
 
-        let tokens: Vec<&dyn BovidaeToken> = vec![
+        let tokens = vec![
             lett, id, equal, num, plus, l_paren, num, times, num, r_paren, semi, // let id = 1 + (2 * 3);
             lett, id, equal, l_paren, num, times, id, r_paren, plus, num, semi, // let id = (1 * id) + 2;
             lett, id, equal, id, semi, // let id = id;
