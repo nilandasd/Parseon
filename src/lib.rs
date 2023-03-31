@@ -202,19 +202,14 @@ impl<'a> Bovidae<'a> {
         }
     }
 
-    pub fn set_prod(&mut self, head: TokenID, body: &Vec<TokenID>) {
-        if !self.tokens.contains(&head) {
-            self.tokens.push(head);
-        }
+    pub fn set_prod(&mut self, head: usize, body: &Vec<usize>) {
+        let head_tid = self.get_token_id(head);
 
-        let head_sym = Symbol::Token(head);
+        let head_sym = Symbol::Token(head_tid);
         let mut body_sym = Vec::<Symbol>::new();
 
         for tid in body.iter() {
-            if !self.tokens.contains(tid) {
-                self.tokens.push(*tid);
-            }
-            body_sym.push(Symbol::Token(*tid));
+            body_sym.push(Symbol::Token(self.get_token_id(*tid)));
         }
 
         if body.is_empty() {
@@ -222,6 +217,16 @@ impl<'a> Bovidae<'a> {
         }
 
         self.prods.push(Prod { head: head_sym, body: body_sym });
+    }
+
+    fn get_token_id(&mut self, id: usize) -> TokenID {
+        match self.tokens.iter().position(|x| *x == id) {
+            Some(idx) => idx,
+            None => {
+                self.tokens.push(id);
+                return self.tokens.len() - 1;
+            }
+        }
     }
 
     pub fn set_observer(&mut self, observer: &'a mut dyn BovidaeObserver) {
@@ -248,7 +253,8 @@ impl<'a> Bovidae<'a> {
                 action = &self.action_table[current_state][reduction_token];
             } else {
                 let token = &tokens[token_idx];
-                action = &self.action_table[current_state][token.bovidae_token_id()];
+                let tid = self.get_token_id(token.bovidae_token_id());
+                action = &self.action_table[current_state][tid];
             }
 
             match action {
