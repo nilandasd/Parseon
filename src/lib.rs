@@ -16,7 +16,7 @@ pub trait BovidaeToken {
 
 pub trait BovidaeObserver {
     fn on_shift(&mut self, token: &dyn BovidaeToken);
-    fn on_reduction(&mut self, prod: &Prod);
+    fn on_reduction(&mut self, head: TokenID, body: Vec<TokenID>);
 }
 
 #[derive(Clone)]
@@ -64,7 +64,7 @@ pub struct Bovidae<'a> {
     epsilon_symbols: Vec<Symbol>,
     action_table: Vec<Vec<Action>>,
     state_stack: Vec<StateID>,
-    tokens: Vec<String>,
+    tokens: Vec<TokenID>,
     observer: Option<&'a mut dyn BovidaeObserver>,
 }
 
@@ -191,64 +191,41 @@ impl<'a> Bovidae<'a> {
             epsilon_symbols: Vec::<Symbol>::new(),
             action_table: Vec::<Vec<Action>>::new(),
             state_stack: Vec::<StateID>::new(),
-            tokens: Vec::<String>::new(),
+            tokens: Vec::<TokenID>::new(),
             observer: None,
         }
     }
 
-    pub fn set_prods(&mut self, prods: &Vec<(&str, &Vec<&str>)>) {
+    pub fn set_prods(&mut self, prods: &Vec<(TokenID, Vec<TokenID>)>) {
         for prod in prods {
-            self.set_prod(prod.0, prod.1);
+            self.set_prod(prod.0, &prod.1);
         }
     }
 
-    pub fn set_prod(&mut self, head_str: &str, body_strs: &Vec<&str>) {
-        let head = match self.get_token_id(head_str) {
-            Some(id) => Symbol::Token(id),
-            None => Symbol::Token(self.set_token(head_str)),
-        };
-        let mut body = Vec::<Symbol>::new();
+    pub fn set_prod(&mut self, head: TokenID, body: &Vec<TokenID>) {
+        if !self.tokens.contains(&head) {
+            self.tokens.push(head);
+        }
 
-        for b in body_strs.iter() {
-            match self.get_token_id(b) {
-                Some(id) => body.push(Symbol::Token(id)),
-                None => body.push(Symbol::Token(self.set_token(b))),
+        let head_sym = Symbol::Token(head);
+        let mut body_sym = Vec::<Symbol>::new();
+
+        for tid in body.iter() {
+            if !self.tokens.contains(tid) {
+                self.tokens.push(*tid);
             }
+            body_sym.push(Symbol::Token(*tid));
         }
 
-        if body_strs.is_empty() {
-            body.push(Symbol::Epsilon);
+        if body.is_empty() {
+            body_sym.push(Symbol::Epsilon);
         }
 
-        self.prods.push(Prod { head, body });
-    }
-
-    pub fn set_token(&mut self, string: &str) -> TokenID {
-        for s in self.tokens.iter() {
-            if s == string {
-                panic!("Token '{}' was defined twice.", string);
-            }
-        }
-
-        let id = self.tokens.len();
-
-        self.tokens.push(string.to_string());
-
-        id
+        self.prods.push(Prod { head: head_sym, body: body_sym });
     }
 
     pub fn set_observer(&mut self, observer: &'a mut dyn BovidaeObserver) {
         self.observer = Some(observer);
-    }
-
-    pub fn get_token_id(&mut self, s: &str) -> Option<TokenID> {
-        for (idx, token_name) in self.tokens.iter().enumerate() {
-            if *token_name == *s {
-                return Some(idx);
-            }
-        }
-
-        None
     }
 
     pub fn parse(&mut self, tokens: &Vec<&dyn BovidaeToken>) -> Result<(), ()> {
@@ -284,7 +261,19 @@ impl<'a> Bovidae<'a> {
                 }
                 Action::Reduce(body_size, tid, pid) => {
                     if let Some(observer) = self.observer.as_mut() {
-                        observer.on_reduction(&self.prods[*pid]);
+                        let prod =  &self.prods[*pid];
+                        let mut head: TokenID = 0;
+                        let mut body = Vec::<TokenID>::new();
+                        if let Symbol::Token(tid) = prod.head {
+                            head = tid;
+                        }
+                        for sym in prod.body.iter() {
+                            if let Symbol::Token(tid) = sym {
+                                body.push(*tid);
+                            }
+                        }
+
+                        observer.on_reduction(head, body);
                     }
                     for _ in 0..*body_size {
                         self.state_stack.pop();
@@ -754,7 +743,6 @@ mod tests {
     struct TestObserver {
         shift_tracker: usize,
         reduce_tracker: usize,
-        token_stack: Vec<TokenID>
     }
 
     impl BovidaeToken for TestToken {
@@ -764,44 +752,41 @@ mod tests {
     }
 
     impl BovidaeObserver for TestObserver {
-        fn on_reduction(&mut self, prod: &Prod) {
-            for i in 0..prod.body.len() {
-                self.token_stack.pop();
-            }
-
-            match prod.head {
-                Symbol::Token(tok) => self.token_stack.push(tok),
-                Symbol::Start => { self.token_stack.push(99); }
-                _ => {}
-            }
-
+        fn on_reduction(&mut self, head: TokenID, body: Vec<TokenID>) {
             self.reduce_tracker += 1;
         }
 
         fn on_shift(&mut self, token: &dyn BovidaeToken) {
             self.shift_tracker += 1;
-            self.token_stack.push(token.bovidae_token_id());
         }
     }
 
     #[test]
     fn it_works() {
         let mut bovidae = Bovidae::new();
+        let E = 0;
+        let T = 1;
+        let F = 2;
+        let plus = 3;
+        let times = 4;
+        let id = 5;
+        let l_paren = 6;
+        let r_paren = 7;
         bovidae.set_prods(&vec![
-            ("E", &vec!["E", "+", "T"]),
-            ("E", &vec!["T"]          ),
-            ("T", &vec!["T", "*", "F"]),
-            ("T", &vec!["F"]          ),
-            ("F", &vec!["(", "E", ")"]),
-            ("F", &vec!["id"]         ),
+            (E, vec![E, plus, T]),
+            (E, vec![T]          ),
+            (T, vec![T, times, F]),
+            (T, vec![F]          ),
+            (F, vec![l_paren, E, r_paren]),
+            (F, vec![id]         ),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let id = &TestToken { id: bovidae.get_token_id("id").unwrap() };
-        let plus = &TestToken { id: bovidae.get_token_id("+").unwrap() };
-        let left_paren = &TestToken { id: bovidae.get_token_id("(").unwrap() };
-        let right_paren = &TestToken { id: bovidae.get_token_id(")").unwrap() };
+        let id = &TestToken { id };
+        let plus = &TestToken { id: plus };
+        let left_paren = &TestToken { id: l_paren };
+        let right_paren = &TestToken { id: r_paren };
 
         let tokens: Vec<&dyn BovidaeToken> = vec![id, plus, left_paren, id, right_paren];
 
@@ -811,15 +796,19 @@ mod tests {
     #[test]
     fn it_works2() {
         let mut bovidae = Bovidae::new();
+        let S = 0;
+        let C = 1;
+        let c = 2;
+        let d = 3;
         bovidae.set_prods(&vec![
-            ("S", &vec!["C", "C"]),
-            ("C", &vec!["c", "C"]),
-            ("C", &vec!["d"]),
+            (S, vec![C, C]),
+            (C, vec![c, C]),
+            (C, vec![d]),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
-        let c = &TestToken { id: bovidae.get_token_id("c").unwrap()};
-        let d = &TestToken { id: bovidae.get_token_id("d").unwrap()};
+        let c = &TestToken { id: c };
+        let d = &TestToken { id: d };
 
         let tokens: Vec<&dyn BovidaeToken> = vec![c, c, c, c, c, d, c, d];
 
@@ -833,19 +822,25 @@ mod tests {
     #[test]
     fn it_works3() {
         let mut bovidae = Bovidae::new();
+        let S = 0;
+        let L = 1;
+        let e = 2;
+        let R = 3;
+        let t = 4;
+        let i = 5;
         bovidae.set_prods(&vec![
-            ("S", &vec!["L", "=", "R"]),
-            ("S", &vec!["R"]),
-            ("L", &vec!["*", "R"]),
-            ("L", &vec!["id"]),
-            ("R", &vec!["L"]),
+            (S, vec![L, e, R]),
+            (S, vec![R]),
+            (L, vec![t, R]),
+            (L, vec![i]),
+            (R, vec![L]),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let eq = &TestToken { id: bovidae.get_token_id("=").unwrap()};
-        let times = &TestToken { id: bovidae.get_token_id("*").unwrap()};
-        let id = &TestToken { id: bovidae.get_token_id("id").unwrap()};
+        let eq = &TestToken { id: e};
+        let times = &TestToken { id: t};
+        let id = &TestToken { id: i};
 
         let tokens: Vec<&dyn BovidaeToken> = vec![times, id, eq, times, id];
 
@@ -859,18 +854,23 @@ mod tests {
     #[test]
     fn it_works4() {
         let mut bovidae = Bovidae::new();
+        let S = 0;
+        let i = 1;
+        let t = 2;
+        let e = 3;
+        let s = 4;
         bovidae.set_prods(&vec![
-            ("S", &vec!["s"]),
-            ("S", &vec!["i", "S", "t", "S"]),
-            ("S", &vec!["i", "S", "t", "S", "e", "S"]),
+            (S, vec![s]),
+            (S, vec![i, S, t, S]),
+            (S, vec![i, S, t, S, e, S]),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let i = &TestToken { id: bovidae.get_token_id("i").unwrap()};
-        let t = &TestToken { id: bovidae.get_token_id("t").unwrap()};
-        let e = &TestToken { id: bovidae.get_token_id("e").unwrap()};
-        let s = &TestToken { id: bovidae.get_token_id("s").unwrap()};
+        let i = &TestToken { id: i};
+        let t = &TestToken { id: t};
+        let e = &TestToken { id: e};
+        let s = &TestToken { id: s};
 
         let tokens: Vec<&dyn BovidaeToken> = vec![i, s, t, s, e, s];
 
@@ -884,18 +884,23 @@ mod tests {
     #[test]
     fn it_works5() {
         let mut bovidae = Bovidae::new();
+        let S = 0;
+        let A = 1;
+        let B = 2;
+        let b = 3;
+        let a = 4;
         bovidae.set_prods(&vec![
-            ("S", &vec!["A", "B"]),
-            ("A", &vec!["a", "A"]),
-            ("A", &vec![]),
-            ("B", &vec!["b", "B"]),
-            ("B", &vec![]),
+            (S, vec![A, B]),
+            (A, vec![a, A]),
+            (A, vec![]),
+            (B, vec![b, B]),
+            (B, vec![]),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let a = &TestToken { id: bovidae.get_token_id("a").unwrap()};
-        let b = &TestToken { id: bovidae.get_token_id("b").unwrap()};
+        let a = &TestToken { id: a};
+        let b = &TestToken { id: b};
 
         let accept_strings: Vec<Vec<&dyn BovidaeToken>> = vec![
             vec![a, a, b, b],
@@ -923,27 +928,34 @@ mod tests {
     #[test]
     fn it_works6() {
         let mut bovidae = Bovidae::new();
+        let S = 0;
+        let A = 1;
+        let B = 2;
+        let C = 3;
+        let a = 4;
+        let b = 5;
+        let c = 6;
+        let x = 7;
         bovidae.set_prods(&vec![
-            ("S", &vec!["A", "B", "C"]),
-            ("A", &vec!["a", "A"]),
-            ("A", &vec!["x"]),
-            ("B", &vec!["b", "B"]),
-            ("B", &vec!["x"]),
-            ("C", &vec!["c", "C"]),
-            ("C", &vec!["x"]),
+            (S, vec![A, B, C]),
+            (A, vec![a, A]),
+            (A, vec![x]),
+            (B, vec![b, B]),
+            (B, vec![x]),
+            (C, vec![c, C]),
+            (C, vec![x]),
         ]);
         bovidae.generate_parser();
         bovidae.print_action_table();
 
-        let a = &TestToken { id: bovidae.get_token_id("a").unwrap()};
-        let b = &TestToken { id: bovidae.get_token_id("b").unwrap()};
-        let c = &TestToken { id: bovidae.get_token_id("c").unwrap()};
-        let x = &TestToken { id: bovidae.get_token_id("x").unwrap()};
+        let a = &TestToken { id: a};
+        let b = &TestToken { id: b};
+        let c = &TestToken { id: c};
+        let x = &TestToken { id: x};
 
         let mut observer = TestObserver {
             reduce_tracker: 0,
             shift_tracker: 0,
-            token_stack: Vec::<TokenID>::new(),
         };
 
         bovidae.set_observer(&mut observer);
@@ -958,37 +970,49 @@ mod tests {
     #[test]
     fn it_works7() {
         let mut bovidae = Bovidae::new();
+        let Ss = 0;
+        let S = 1;
+        let semi = 2;
+        let lett = 3;
+        let id = 4;
+        let eq = 5;
+        let Expr = 6;
+        let l_paren = 7;
+        let r_paren = 8;
+        let Binop = 9;
+        let num = 10;
+        let plus = 11;
+        let times = 12;
         bovidae.set_prods(&vec![
-            ("SS", &vec!["S", ";", "SS"]),
-            ("SS", &vec!["S", ";"]),
+            (Ss, vec![S, semi, Ss]),
+            (Ss, vec![S, semi]),
 
-            ("S", &vec!["let", "id", "=", "Expr"]),
+            (S, vec![lett, id, eq, Expr]),
 
-            ("Expr", &vec!["(", "Expr", ")"]),
-            ("Expr", &vec!["Expr", "Binop", "Expr"]),
-            ("Expr", &vec!["id"]),
-            ("Expr", &vec!["num"]),
+            (Expr, vec![l_paren, Expr, r_paren]),
+            (Expr, vec![Expr, Binop, Expr]),
+            (Expr, vec![id]),
+            (Expr, vec![num]),
 
-            ("Binop", &vec!["+"]),
-            ("Binop", &vec!["*"]),
+            (Binop, vec![plus]),
+            (Binop, vec![times]),
         ]);
         bovidae.generate_parser();
         // bovidae.print_action_table();
 
-        let lett = &TestToken { id: bovidae.get_token_id("let").unwrap()};
-        let equal = &TestToken { id: bovidae.get_token_id("=").unwrap()};
-        let l_paren = &TestToken { id: bovidae.get_token_id("(").unwrap()};
-        let r_paren = &TestToken { id: bovidae.get_token_id(")").unwrap()};
-        let num = &TestToken { id: bovidae.get_token_id("num").unwrap()};
-        let plus = &TestToken { id: bovidae.get_token_id("+").unwrap()};
-        let times = &TestToken { id: bovidae.get_token_id("*").unwrap()};
-        let id = &TestToken { id: bovidae.get_token_id("id").unwrap()};
-        let semi = &TestToken { id: bovidae.get_token_id(";").unwrap()};
+        let lett = &TestToken { id: lett };
+        let equal = &TestToken { id: eq };
+        let l_paren = &TestToken { id: l_paren };
+        let r_paren = &TestToken { id: r_paren };
+        let num = &TestToken { id: num };
+        let plus = &TestToken { id: plus };
+        let times = &TestToken { id: times };
+        let id = &TestToken { id: id };
+        let semi = &TestToken { id: semi };
 
         let mut observer = TestObserver {
             reduce_tracker: 0,
             shift_tracker: 0,
-            token_stack: Vec::<TokenID>::new(),
         };
 
         bovidae.set_observer(&mut observer);
