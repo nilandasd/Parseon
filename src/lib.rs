@@ -13,7 +13,7 @@ struct ParsingError {
 
 pub trait BovidaeToken: Any {
     fn bovidae_token_id(&self) -> TokenID;
-    fn bovidae_token_attr(&self) -> String;
+    fn bovidae_token_attr(&self) -> Option<String>;
 }
 
 pub trait BovidaeObserver {
@@ -755,8 +755,8 @@ mod tests {
         fn bovidae_token_id(&self) -> usize {
             self.id
         }
-        fn bovidae_token_attr(&self) -> String {
-            "".to_string()
+        fn bovidae_token_attr(&self) -> Option<String> {
+            None
         }
     }
 
