@@ -269,11 +269,11 @@ impl Bovidae {
                         let mut head: TokenID = 0;
                         let mut body = Vec::<TokenID>::new();
                         if let Symbol::Token(tid) = prod.head {
-                            head = tid;
+                            head = self.tokens[tid];
                         }
                         for sym in prod.body.iter() {
                             if let Symbol::Token(tid) = sym {
-                                body.push(*tid);
+                                body.push(self.tokens[*tid]);
                             }
                         }
 
