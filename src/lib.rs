@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::collections::HashSet;
-use std::any::Any;
 
 type StateID = usize;
 type TokenID = usize;
@@ -11,7 +10,7 @@ struct ParsingError {
 
 }
 
-pub trait BovidaeToken: Any {
+pub trait BovidaeToken {
     fn bovidae_token_id(&self) -> TokenID;
     fn bovidae_token_attr(&self) -> Option<String>;
 }
