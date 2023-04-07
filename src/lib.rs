@@ -6,10 +6,6 @@ type StateID = usize;
 type TokenID = usize;
 type ProdID = usize;
 
-struct ParsingError {
-
-}
-
 pub enum ParseResult {
     Shift,
     Reduction(TokenID, usize), // reduction token id and the prod id
@@ -186,7 +182,7 @@ impl Bovidae {
             prop_table: Vec::<((StateID, usize), (StateID, usize))>::new(),
             epsilon_symbols: Vec::<Symbol>::new(),
             action_table: Vec::<Vec<Action>>::new(),
-            state_stack: Vec::<StateID>::new(),
+            state_stack: Vec::<StateID>::from([0]),
             token_ids: Vec::<TokenID>::new(),
         }
     }
@@ -224,15 +220,25 @@ impl Bovidae {
         }
     }
 
-    pub fn parse(&mut self, token_id: TokenID) -> Result<ParseResult, ()> {
+    pub fn reset(&mut self) {
+        self.state_stack = Vec::<StateID>::from([0]);
+    }
+
+    pub fn parse(&mut self, token_id: Option<TokenID>) -> Result<ParseResult, ()> {
+        // passing a None token ID is interpreted as passing the accept token
         let current_state = *self.state_stack.last().unwrap();
-        let tid = self.get_token_id(token_id);
-        let action = &self.action_table[current_state][tid];
+        let action = match token_id {
+            Some(id) => {
+                let tid = self.get_token_id(id);
+                &self.action_table[current_state][tid]
+            }
+            None => &Action::Accept,
+        };
 
         match action {
-            Action::Accept => return Ok(ParseResult::Accept),
+            Action::Accept => return Ok(ParseResult::Accept), 
             Action::Error => return Err(()),
-            Action::Goto(sid) => return Err(()), // user should only ever pass in terminals, goto's are handled with the reduction match
+            Action::Goto(_) => return Err(()), // user should only ever pass in terminals, goto's are handled with the reduction match
             Action::Shift(sid) => {
                 self.state_stack.push(*sid);
                 return Ok(ParseResult::Shift);
@@ -255,11 +261,11 @@ impl Bovidae {
     }
 
     pub fn parse_tokens(&mut self, tokens: Vec<TokenID>) -> Result<(), ()> {
-        self.state_stack.push(0);
-
         let mut token_idx = 0;
         let mut reduction_token = 0;
         let mut reduction_flag = false;
+
+        self.reset();
 
         while token_idx <= tokens.len() {
             let current_state = *self.state_stack.last().unwrap();
@@ -283,7 +289,7 @@ impl Bovidae {
                     token_idx += 1;
                     self.state_stack.push(*sid);
                 }
-                Action::Reduce(body_size, tid, pid) => {
+                Action::Reduce(body_size, tid, _) => {
                     for _ in 0..*body_size {
                         self.state_stack.pop();
                     }
