@@ -251,7 +251,7 @@ impl Bovidae {
                 return Ok(ParseResult::Shift);
             }
             Action::Reduce(body_size, tid, pid) => {
-                let user_tid = self.get_token_id(*tid);
+                let user_tid = self.token_ids[*tid];
                 for _ in 0..*body_size {
                     self.state_stack.pop();
                 }
