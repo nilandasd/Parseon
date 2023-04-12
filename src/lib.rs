@@ -194,13 +194,13 @@ impl Bovidae {
     }
 
     pub fn set_prod(&mut self, head: usize, body: &Vec<usize>) {
-        let head_tid = self.get_token_id(head);
+        let head_tid = self.get_or_create_token_id(head);
 
         let head_sym = Symbol::Token(head_tid);
         let mut body_sym = Vec::<Symbol>::new();
 
         for tid in body.iter() {
-            body_sym.push(Symbol::Token(self.get_token_id(*tid)));
+            body_sym.push(Symbol::Token(self.get_or_create_token_id(*tid)));
         }
 
         if body.is_empty() {
@@ -210,13 +210,20 @@ impl Bovidae {
         self.prods.push(Prod { head: head_sym, body: body_sym });
     }
 
-    fn get_token_id(&mut self, id: usize) -> TokenID {
+    fn get_or_create_token_id(&mut self, id: usize) -> TokenID {
         match self.token_ids.iter().position(|x| *x == id) {
             Some(idx) => idx,
             None => {
                 self.token_ids.push(id);
                 return self.token_ids.len() - 1;
             }
+        }
+    }
+
+    fn get_token_id(&self, id: usize) -> TokenID {
+        match self.token_ids.iter().position(|x| *x == id) {
+            Some(idx) => idx,
+            None => { panic!("parser error"); }
         }
     }
 
@@ -244,15 +251,16 @@ impl Bovidae {
                 return Ok(ParseResult::Shift);
             }
             Action::Reduce(body_size, tid, pid) => {
+                let user_tid = self.get_token_id(*tid);
                 for _ in 0..*body_size {
                     self.state_stack.pop();
                 }
 
-                let new_state = self.state_stack.last().unwrap();
-                let goto_action = &self.action_table[*new_state][*tid];
+                let new_state = *self.state_stack.last().unwrap();
+                let goto_action = &self.action_table[new_state][*tid];
                 if let Action::Goto(state_id) = goto_action {
                     self.state_stack.push(*state_id);
-                    return Ok(ParseResult::Reduction(*tid, *pid))
+                    return Ok(ParseResult::Reduction(user_tid, *pid))
                 }
             }
         }
@@ -963,6 +971,19 @@ mod tests {
             lett, id, eq, id, semi, // let id = id;
         ];
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+       // assert!(bovidae.parse_tokens(tokens).is_ok());
+        for tid in tokens {
+            loop {
+                let parse_result = bovidae.parse(Some(tid));
+
+                if let ParseResult::Reduction(_, _) = parse_result.ok().unwrap() {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        assert!(bovidae.parse(None).is_ok());
     }
 }
