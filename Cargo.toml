@@ -1,6 +1,6 @@
 [package]
 name = "bovidae"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Niland Schumacher <naschuma@ucsc.edu>"]
 description = "Yet another LALR(1) parser generator"
