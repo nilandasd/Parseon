@@ -6,9 +6,9 @@ type StateID = usize;
 type TokenID = usize;
 type ProdID = usize;
 
-pub enum ParseResult {
+pub enum ParseResult<Token> {
     Shift,
-    Reduction(TokenID, usize), // reduction token id and the prod id
+    Reduction(Token, usize), // reduction token id and the prod id
     Accept,
 }
 
@@ -50,14 +50,16 @@ struct Item {
     la: Vec<Symbol>,
 }
 
-pub struct Bovidae {
+pub struct Bovidae<Token>
+where Token: Copy + Clone + PartialEq + std::fmt::Debug
+{
     prods: Vec<Prod>,
     states: Vec<State>,
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
     epsilon_symbols: Vec<Symbol>,
     action_table: Vec<Vec<Action>>,
     state_stack: Vec<StateID>,
-    token_ids: Vec<TokenID>,
+    token_ids: Vec<Token>,
 }
 
 impl Prod {
@@ -174,7 +176,9 @@ impl Item {
     }
 }
 
-impl Bovidae {
+impl<Token> Bovidae<Token>
+where Token: Copy + Clone + std::fmt::Debug + PartialEq
+{
     pub fn new() -> Self {
         Self {
             prods: Vec::<Prod>::new(),
@@ -183,17 +187,17 @@ impl Bovidae {
             epsilon_symbols: Vec::<Symbol>::new(),
             action_table: Vec::<Vec<Action>>::new(),
             state_stack: Vec::<StateID>::from([0]),
-            token_ids: Vec::<TokenID>::new(),
+            token_ids: Vec::<Token>::new(),
         }
     }
 
-    pub fn set_prods(&mut self, prods: &Vec<(TokenID, Vec<TokenID>)>) {
+    pub fn set_prods(&mut self, prods: &Vec<(Token, Vec<Token>)>) {
         for prod in prods {
             self.set_prod(prod.0, &prod.1);
         }
     }
 
-    pub fn set_prod(&mut self, head: usize, body: &Vec<usize>) {
+    pub fn set_prod(&mut self, head: Token, body: &Vec<Token>) {
         let head_tid = self.get_or_create_token_id(head);
 
         let head_sym = Symbol::Token(head_tid);
@@ -210,7 +214,7 @@ impl Bovidae {
         self.prods.push(Prod { head: head_sym, body: body_sym });
     }
 
-    fn get_or_create_token_id(&mut self, id: usize) -> TokenID {
+    fn get_or_create_token_id(&mut self, id: Token) -> TokenID {
         match self.token_ids.iter().position(|x| *x == id) {
             Some(idx) => idx,
             None => {
@@ -220,7 +224,7 @@ impl Bovidae {
         }
     }
 
-    fn get_token_id(&self, id: usize) -> TokenID {
+    fn get_token_id(&self, id: Token) -> TokenID {
         match self.token_ids.iter().position(|x| *x == id) {
             Some(idx) => idx,
             None => { panic!("parser error"); }
@@ -231,7 +235,7 @@ impl Bovidae {
         self.state_stack = Vec::<StateID>::from([0]);
     }
 
-    pub fn parse(&mut self, token_id: Option<TokenID>) -> Result<ParseResult, ()> {
+    pub fn parse(&mut self, token_id: Option<Token>) -> Result<ParseResult<Token>, ()> {
         // passing a None token ID is interpreted as passing the accept token
         let current_state = *self.state_stack.last().unwrap();
         let action = match token_id {
@@ -268,7 +272,7 @@ impl Bovidae {
         return Err(())
     }
 
-    pub fn parse_tokens(&mut self, tokens: Vec<TokenID>) -> Result<(), ()> {
+    pub fn parse_tokens(&mut self, tokens: Vec<Token>) -> Result<(), ()> {
         let mut token_idx = 0;
         let mut reduction_token = 0;
         let mut reduction_flag = false;
@@ -398,7 +402,7 @@ impl Bovidae {
         println!("\t\t----- ACTION TABLE -----");
 
         for tok in self.token_ids.iter() {
-            print!("\t{} ", tok);
+            print!("\t{:?} ", tok);
         }
 
         print!("\tACCEPT");
@@ -754,111 +758,115 @@ impl Bovidae {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    enum Tok {
+        E,
+        T,
+        F,
+        Plus,
+        Times,
+        Id,
+        Lparen,
+        Rparen,
+        S,
+        C,
+        D,
+        P,
+        L,
+        R,
+        First,
+        Second,
+        Last,
+        End
+    }
+
     #[test]
     fn it_works() {
-        let mut bovidae = Bovidae::new();
-        let E = 0;
-        let T = 1;
-        let F = 2;
-        let plus = 3;
-        let times = 4;
-        let id = 5;
-        let l_paren = 6;
-        let r_paren = 7;
-        bovidae.set_prods(&vec![
-            (E, vec![E, plus, T]),
-            (E, vec![T]          ),
-            (T, vec![T, times, F]),
-            (T, vec![F]          ),
-            (F, vec![l_paren, E, r_paren]),
-            (F, vec![id]         ),
+        let mut parser = Bovidae::<Tok>::new();
+
+        parser.set_prods(&vec![
+            (Tok::E, vec![Tok::T]),
+            (Tok::T, vec![Tok::T, Tok::Plus, Tok::F]),
+            (Tok::T, vec![Tok::T, Tok::Times, Tok::F]),
+            (Tok::T, vec![Tok::F]),
+            (Tok::F, vec![Tok::Lparen, Tok::E, Tok::Rparen]),
+            (Tok::F, vec![Tok::Id]),
         ]);
-        bovidae.generate_parser();
-        //bovidae.print_action_table();
 
-        let tokens: Vec<TokenID> = vec![id, plus, l_paren, id, r_paren];
+        parser.generate_parser();
+        //parser.print_action_table();
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+        let tokens: Vec<Tok> = vec![Tok::Id, Tok::Plus, Tok::Lparen, Tok::Id, Tok::Rparen];
+
+        assert!(parser.parse_tokens(tokens).is_ok());
     }
 
     #[test]
     fn it_works2() {
-        let mut bovidae = Bovidae::new();
-        let S = 0;
-        let C = 1;
-        let c = 2;
-        let d = 3;
-        bovidae.set_prods(&vec![
-            (S, vec![C, C]),
-            (C, vec![c, C]),
-            (C, vec![d]),
+        let mut parser = Bovidae::new();
+
+        parser.set_prods(&vec![
+            (Tok::S, vec![Tok::C, Tok::C]),
+            (Tok::C, vec![Tok::E, Tok::C]),
+            (Tok::C, vec![Tok::D]),
         ]);
-        bovidae.generate_parser();
+        parser.generate_parser();
         //bovidae.print_action_table();
 
-        let tokens: Vec<TokenID> = vec![c, c, c, c, c, d, c, d];
+        let tokens: Vec<Tok> = vec![Tok::E, Tok::E, Tok::E, Tok::E, Tok::E, Tok::D, Tok::E, Tok::D];
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+        assert!(parser.parse_tokens(tokens).is_ok());
 
-        let tokens = vec![c, d, c, d, c];
+        let tokens: Vec<Tok> = vec![Tok::E,  Tok::D, Tok::E, Tok::D, Tok::E];
 
-        assert!(bovidae.parse_tokens(tokens).is_err());
+        assert!(parser.parse_tokens(tokens).is_err());
     }
 
     #[test]
     fn it_works3() {
-        let mut bovidae = Bovidae::new();
-        let S = 0;
-        let L = 1;
-        let e = 2;
-        let R = 3;
-        let t = 4;
-        let i = 5;
-        bovidae.set_prods(&vec![
-            (S, vec![L, e, R]),
-            (S, vec![R]),
-            (L, vec![t, R]),
-            (L, vec![i]),
-            (R, vec![L]),
+        let mut parser = Bovidae::new();
+
+        parser.set_prods(&vec![
+            (Tok::S, vec![Tok::L, Tok::E, Tok::R]),
+            (Tok::S, vec![Tok::R]),
+            (Tok::L, vec![Tok::T, Tok::R]),
+            (Tok::L, vec![Tok::P]),
+            (Tok::R, vec![Tok::L]),
         ]);
-        bovidae.generate_parser();
+        parser.generate_parser();
         //bovidae.print_action_table();
 
+        let tokens: Vec<Tok> = vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P];
 
-        let tokens: Vec<TokenID> = vec![t, i, e, t, i];
+        assert!(parser.parse_tokens(tokens).is_ok());
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+        let tokens: Vec<Tok> = vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P, Tok::P];
 
-        let tokens = vec![t, i, e, t, i, i];
-
-        assert!(bovidae.parse_tokens(tokens).is_err());
+        assert!(parser.parse_tokens(tokens).is_err());
     }
 
     #[test]
     fn it_works4() {
         let mut bovidae = Bovidae::new();
-        let S = 0;
-        let i = 1;
-        let t = 2;
-        let e = 3;
-        let s = 4;
+
         bovidae.set_prods(&vec![
-            (S, vec![s]),
-            (S, vec![i, S, t, S]),
-            (S, vec![i, S, t, S, e, S]),
+            (Tok::S, vec![Tok::End]),
+            (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S]),
+            (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S, Tok::Last, Tok::S]),
         ]);
         bovidae.generate_parser();
         //bovidae.print_action_table();
 
-        let tokens = vec![i, s, t, s, e, s];
+        let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Last, Tok::End];
 
         assert!(bovidae.parse_tokens(tokens).is_ok());
 
-        let tokens = vec![i, s, t, s, i, s];
+        let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::First, Tok::End];
 
         assert!(bovidae.parse_tokens(tokens).is_err());
     }
