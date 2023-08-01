@@ -1,16 +1,209 @@
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 
-type StateID = usize;
-type TokenID = usize;
-type ProdID = usize;
+// ========== PUBLIC TYPES ==========
 
-pub enum ParseResult<Token> {
+// ProdID's are set incrementally with the first prod set having a ProdID of 0.
+// the second prod having id 1, etc... ProdID's are exposed publiclly so when a
+// reduction happens the ProdID of the reduced production can be returned to
+// the user of the parser.
+pub type ProdID = usize;
+
+// Ok() type returned by the parse method
+pub enum ParseonAction<Token> {
     Shift,
-    Reduction(Token, usize), // reduction token id and the prod id
+    Reduction(Token, ProdID),
     Accept,
 }
+
+// Err() type returned by the parse method
+pub enum ParseonError {
+    PassedNonTerm,
+    BadToken,
+}
+
+pub struct Parseon<Token>
+where Token: Copy + Clone + PartialEq + std::fmt::Debug
+{
+    action_table: Vec<Vec<Action>>,// TODO: compile the action table into rust code!
+    epsilon_symbols: Vec<Symbol>,
+    prods: Vec<Prod>,
+    prop_table: Vec<((StateID, usize), (StateID, usize))>,
+    states: Vec<State>,
+    state_stack: Vec<StateID>,
+    token_ids: Vec<Token>,
+}
+
+// ========== PUBLIC METHODS =========
+
+impl<Token> Parseon<Token>
+where Token: Copy + Clone + std::fmt::Debug + PartialEq
+{
+    pub fn new() -> Self {
+        Self {
+            action_table: Vec::<Vec<Action>>::new(),
+            epsilon_symbols: Vec::<Symbol>::new(),
+            prods: Vec::<Prod>::new(),
+            prop_table: Vec::<((StateID, usize), (StateID, usize))>::new(),
+            states: Vec::<State>::new(),
+            state_stack: Vec::<StateID>::from([0]),
+            token_ids: Vec::<Token>::new(),
+        }
+    }
+
+    pub fn set_prods(&mut self, prods: &Vec<(Token, Vec<Token>)>) {
+        for prod in prods {
+            self.set_prod(prod.0, &prod.1);
+        }
+    }
+
+    pub fn set_prod(&mut self, head: Token, body: &Vec<Token>) {
+        let head_tid = self.get_or_create_token_id(head);
+
+        let head_sym = Symbol::Token(head_tid);
+        let mut body_sym = Vec::<Symbol>::new();
+
+        for tid in body.iter() {
+            body_sym.push(Symbol::Token(self.get_or_create_token_id(*tid)));
+        }
+
+        if body.is_empty() {
+            body_sym.push(Symbol::Epsilon);
+        }
+
+        self.prods.push(Prod { head: head_sym, body: body_sym });
+    }
+
+    pub fn reset(&mut self) {
+        self.state_stack = Vec::<StateID>::from([0]);
+    }
+
+    pub fn parse_tokens(&mut self, tokens: Vec<Token>) -> Result<(), ParseonError> {
+        let mut idx = 0;
+
+        self.reset();
+
+        while idx <= tokens.len() {
+            let token = if idx == tokens.len() {
+                None
+            } else {
+                Some(tokens[idx])
+            };
+
+            let mut reduction_flag = true;
+            while reduction_flag {
+                if let ParseonAction::Reduction(_, _) = self.parse(token)? {
+                    // do nothing
+                } else {
+                    idx += 1;
+                    reduction_flag = false;
+                }
+            }
+        }
+
+
+        Ok(())
+    }
+
+    pub fn parse(&mut self, token_id: Option<Token>) -> Result<ParseonAction<Token>, ParseonError> {
+        // if token is a non terminal
+        //  error
+
+        // passing a None token ID is interpreted as passing the accept token
+        let current_state = *self.state_stack.last().unwrap();
+        let action = match token_id {
+            Some(id) => {
+                let tid = self.get_token_id(id);
+                &self.action_table[current_state][tid]
+            }
+            None => {
+                let tid = self.action_table[0].len() - 1;
+                &self.action_table[current_state][tid]
+            }
+        };
+
+        match action {
+            Action::Accept => return Ok(ParseonAction::Accept), 
+            Action::Error => return Err(ParseonError::BadToken),
+            Action::Goto(_) => {
+                unreachable!("parse only accepts terminal tokens");
+            }
+            Action::Shift(sid) => {
+                self.state_stack.push(*sid);
+                return Ok(ParseonAction::Shift);
+            }
+            Action::Reduce(body_size, tid, pid) => {
+                let user_tid = self.token_ids[*tid];
+                for _ in 0..*body_size {
+                    self.state_stack.pop();
+                }
+
+                let new_state = *self.state_stack.last().unwrap();
+                let goto_action = &self.action_table[new_state][*tid];
+
+                if let Action::Goto(state_id) = goto_action {
+                    self.state_stack.push(*state_id);
+                    return Ok(ParseonAction::Reduction(user_tid, *pid))
+                } else {
+                    // return Err(ParseonError::BadGrammar)
+                    unreachable!("hmm this might not be unreachable bad grammar is defined?")
+                }
+            }
+        }
+    }
+
+    // Meant to be called after inserting all productions.
+    // 1. build LR(0) items
+    // 2. create propagation table
+    // 3. propagate lookaheads
+    // 4. construct parsing table
+    pub fn generate_parser(&mut self) {
+        self.find_epsilon_symbols();
+        self.create_states();
+        self.build_prop_table();
+        self.prop_lookaheads();
+        self.la_close_kernels();
+        self.create_action_table();
+        // TODO: self.minimize action_table equivalent rows on the action table can be combined
+        self.clean();
+    }
+
+    // prints the action table created after calling generate_parser
+    // TODO: printed action table can be broken if token names are too long
+    pub fn print_action_table(&self) {
+        println!("\t\t----- ACTION TABLE -----");
+
+        for tok in self.token_ids.iter() {
+            print!("\t{:?} ", tok);
+        }
+
+        print!("\tACCEPT");
+        println!("");
+
+        for (idx, row) in self.action_table.iter().enumerate() {
+            print!("{} | ", idx);
+
+            for action in row.iter() {
+                match action {
+                    Action::Reduce(n, _, _) => print!("\tR{}", n),
+                    Action::Goto(id) => print!("\tG{}", id),
+                    Action::Shift(id) => print!("\tS{}", id),
+                    Action::Accept => print!("\tAcc"),
+                    Action::Error => print!("\t"),
+                }
+
+            }
+
+            println!("");
+        }
+
+        println!("");
+    }
+}
+
+// ========== PRIVATE TYPES ==========
+
+type TokenID = usize;
+type StateID = usize;
 
 #[derive(Clone)]
 enum Action {
@@ -32,7 +225,7 @@ enum Symbol {
 }
 
 #[derive(Clone)]
-pub struct Prod {
+struct Prod {
     head: Symbol,
     body: Vec<Symbol>,
 }
@@ -43,23 +236,11 @@ struct State {
     gotos: Vec<(Symbol, usize)>,
 }
 
-#[derive(Clone)] // partialEq
+#[derive(Clone)]
 struct Item {
     head: Symbol,
     body: Vec<Symbol>,
     la: Vec<Symbol>,
-}
-
-pub struct Bovidae<Token>
-where Token: Copy + Clone + PartialEq + std::fmt::Debug
-{
-    prods: Vec<Prod>,
-    states: Vec<State>,
-    prop_table: Vec<((StateID, usize), (StateID, usize))>,
-    epsilon_symbols: Vec<Symbol>,
-    action_table: Vec<Vec<Action>>,
-    state_stack: Vec<StateID>,
-    token_ids: Vec<Token>,
 }
 
 impl Prod {
@@ -94,7 +275,7 @@ impl PartialEq for Item {
 }
 
 impl State {
-    pub fn possible_moves(&self) -> Vec<Symbol> {
+    fn possible_moves(&self) -> Vec<Symbol> {
         let mut possible_moves = vec![];
 
         for item in self.items.iter() {
@@ -108,13 +289,13 @@ impl State {
         possible_moves
     }
      
-    pub fn remove_nonkernel_items(&mut self) {
+    fn remove_nonkernel_items(&mut self) {
         self.items = self.items.iter().filter(|i| i.is_kernel()).cloned().collect();
     }
 }
 
 impl Item {
-    pub fn expects(&self) -> Option<Symbol> {
+    fn expects(&self) -> Option<Symbol> {
         let mut cursor_flag = false;
 
         for sym in self.body.iter() {
@@ -128,7 +309,7 @@ impl Item {
         return None;
     }
 
-    pub fn shift_cursor(&self) -> Self {
+    fn shift_cursor(&self) -> Self {
         let mut new_body = Vec::<Symbol>::new();
         let mut cursor_flag = false;
 
@@ -151,11 +332,11 @@ impl Item {
         }
     }
 
-    pub fn is_kernel(&self) -> bool {
+    fn is_kernel(&self) -> bool {
         self.body[0] != Symbol::Cursor || self.head == Symbol::Start
     }
 
-    pub fn postfix(&self, s: Symbol) -> Vec<Symbol> {
+    fn postfix(&self, s: Symbol) -> Vec<Symbol> {
         let mut result = Vec::<Symbol>::new();
         let mut cursor_flag = false;
         let mut push_flag = false;
@@ -176,44 +357,9 @@ impl Item {
     }
 }
 
-impl<Token> Bovidae<Token>
+impl<Token> Parseon<Token>
 where Token: Copy + Clone + std::fmt::Debug + PartialEq
 {
-    pub fn new() -> Self {
-        Self {
-            prods: Vec::<Prod>::new(),
-            states: Vec::<State>::new(),
-            prop_table: Vec::<((StateID, usize), (StateID, usize))>::new(),
-            epsilon_symbols: Vec::<Symbol>::new(),
-            action_table: Vec::<Vec<Action>>::new(),
-            state_stack: Vec::<StateID>::from([0]),
-            token_ids: Vec::<Token>::new(),
-        }
-    }
-
-    pub fn set_prods(&mut self, prods: &Vec<(Token, Vec<Token>)>) {
-        for prod in prods {
-            self.set_prod(prod.0, &prod.1);
-        }
-    }
-
-    pub fn set_prod(&mut self, head: Token, body: &Vec<Token>) {
-        let head_tid = self.get_or_create_token_id(head);
-
-        let head_sym = Symbol::Token(head_tid);
-        let mut body_sym = Vec::<Symbol>::new();
-
-        for tid in body.iter() {
-            body_sym.push(Symbol::Token(self.get_or_create_token_id(*tid)));
-        }
-
-        if body.is_empty() {
-            body_sym.push(Symbol::Epsilon);
-        }
-
-        self.prods.push(Prod { head: head_sym, body: body_sym });
-    }
-
     fn get_or_create_token_id(&mut self, id: Token) -> TokenID {
         match self.token_ids.iter().position(|x| *x == id) {
             Some(idx) => idx,
@@ -229,104 +375,6 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
             Some(idx) => idx,
             None => { panic!("parser error"); }
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.state_stack = Vec::<StateID>::from([0]);
-    }
-
-    pub fn parse(&mut self, token_id: Option<Token>) -> Result<ParseResult<Token>, ()> {
-        // passing a None token ID is interpreted as passing the accept token
-        let current_state = *self.state_stack.last().unwrap();
-        let action = match token_id {
-            Some(id) => {
-                let tid = self.get_token_id(id);
-                &self.action_table[current_state][tid]
-            }
-            None => &Action::Accept,
-        };
-
-        match action {
-            Action::Accept => return Ok(ParseResult::Accept), 
-            Action::Error => return Err(()),
-            Action::Goto(_) => return Err(()), // user should only ever pass in terminals, goto's are handled with the reduction match
-            Action::Shift(sid) => {
-                self.state_stack.push(*sid);
-                return Ok(ParseResult::Shift);
-            }
-            Action::Reduce(body_size, tid, pid) => {
-                let user_tid = self.token_ids[*tid];
-                for _ in 0..*body_size {
-                    self.state_stack.pop();
-                }
-
-                let new_state = *self.state_stack.last().unwrap();
-                let goto_action = &self.action_table[new_state][*tid];
-                if let Action::Goto(state_id) = goto_action {
-                    self.state_stack.push(*state_id);
-                    return Ok(ParseResult::Reduction(user_tid, *pid))
-                }
-            }
-        }
-
-        return Err(())
-    }
-
-    pub fn parse_tokens(&mut self, tokens: Vec<Token>) -> Result<(), ()> {
-        let mut token_idx = 0;
-        let mut reduction_token = 0;
-        let mut reduction_flag = false;
-
-        self.reset();
-
-        while token_idx <= tokens.len() {
-            let current_state = *self.state_stack.last().unwrap();
-            let action: &Action;
-            if token_idx == tokens.len() {
-                action = &Action::Accept;
-            } else if reduction_flag {
-                reduction_flag = false;
-                action = &self.action_table[current_state][reduction_token];
-            } else {
-                let token = &tokens[token_idx];
-                let tid = self.get_token_id(*token);
-                action = &self.action_table[current_state][tid];
-            }
-
-            match action {
-                Action::Accept => return Ok(()),
-                Action::Error => return Err(()),
-                Action::Goto(sid) => self.state_stack.push(*sid),
-                Action::Shift(sid) => {
-                    token_idx += 1;
-                    self.state_stack.push(*sid);
-                }
-                Action::Reduce(body_size, tid, _) => {
-                    for _ in 0..*body_size {
-                        self.state_stack.pop();
-                    }
-                    reduction_token = *tid;
-                    reduction_flag = true;
-                }
-            }
-        }
-
-        return Err(())
-    }
-
-    // 1. build LR(0) items
-    // 2. create propagation table
-    // 3. propagate lookaheads
-    // 4. construct parsing table
-    pub fn generate_parser(&mut self) {
-        self.find_epsilon_symbols();
-        self.create_states();
-        self.build_prop_table();
-        self.prop_lookaheads();
-        self.la_close_kernels();
-        self.create_action_table();
-        // self.minimize action_table equivalent rows on the action table can be combined
-        self.clean();
     }
 
     fn clean(&mut self) {
@@ -396,36 +444,6 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
 
             self.action_table.push(action_table_row);
         }
-    }
-
-    pub fn print_action_table(&self) {
-        println!("\t\t----- ACTION TABLE -----");
-
-        for tok in self.token_ids.iter() {
-            print!("\t{:?} ", tok);
-        }
-
-        print!("\tACCEPT");
-        println!("");
-
-        for (idx, row) in self.action_table.iter().enumerate() {
-            print!("{} | ", idx);
-
-            for action in row.iter() {
-                match action {
-                    Action::Reduce(n, _, _) => print!("\tR{}", n),
-                    Action::Goto(id) => print!("\tG{}", id),
-                    Action::Shift(id) => print!("\tS{}", id),
-                    Action::Accept => print!("\tAcc"),
-                    Action::Error => print!("\t"),
-                }
-
-            }
-
-            println!("");
-        }
-
-        println!("");
     }
 
     fn get_prod_id(&self, item: &Item) -> ProdID {
@@ -765,17 +783,19 @@ mod tests {
 
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum Tok {
+        A,
+        B,
+        C,
+        D,
         E,
-        T,
         F,
+        T,
         Plus,
         Times,
         Id,
         Lparen,
         Rparen,
         S,
-        C,
-        D,
         P,
         L,
         R,
@@ -786,8 +806,8 @@ mod tests {
     }
 
     #[test]
-    fn it_works() {
-        let mut parser = Bovidae::<Tok>::new();
+    fn simple_grammar1() {
+        let mut parser = Parseon::<Tok>::new();
 
         parser.set_prods(&vec![
             (Tok::E, vec![Tok::T]),
@@ -799,7 +819,7 @@ mod tests {
         ]);
 
         parser.generate_parser();
-        //parser.print_action_table();
+        parser.print_action_table();
 
         let tokens: Vec<Tok> = vec![Tok::Id, Tok::Plus, Tok::Lparen, Tok::Id, Tok::Rparen];
 
@@ -807,8 +827,8 @@ mod tests {
     }
 
     #[test]
-    fn it_works2() {
-        let mut parser = Bovidae::new();
+    fn simple_grammar2() {
+        let mut parser = Parseon::new();
 
         parser.set_prods(&vec![
             (Tok::S, vec![Tok::C, Tok::C]),
@@ -816,7 +836,7 @@ mod tests {
             (Tok::C, vec![Tok::D]),
         ]);
         parser.generate_parser();
-        //bovidae.print_action_table();
+        //parser.print_action_table();
 
         let tokens: Vec<Tok> = vec![Tok::E, Tok::E, Tok::E, Tok::E, Tok::E, Tok::D, Tok::E, Tok::D];
 
@@ -828,8 +848,8 @@ mod tests {
     }
 
     #[test]
-    fn it_works3() {
-        let mut parser = Bovidae::new();
+    fn simple_grammar3() {
+        let mut parser = Parseon::new();
 
         parser.set_prods(&vec![
             (Tok::S, vec![Tok::L, Tok::E, Tok::R]),
@@ -839,7 +859,7 @@ mod tests {
             (Tok::R, vec![Tok::L]),
         ]);
         parser.generate_parser();
-        //bovidae.print_action_table();
+        //parser.print_action_table();
 
         let tokens: Vec<Tok> = vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P];
 
@@ -851,70 +871,65 @@ mod tests {
     }
 
     #[test]
-    fn it_works4() {
-        let mut bovidae = Bovidae::new();
+    fn simple_grammar4() {
+        let mut parser = Parseon::new();
 
-        bovidae.set_prods(&vec![
+        parser.set_prods(&vec![
             (Tok::S, vec![Tok::End]),
             (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S]),
             (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S, Tok::Last, Tok::S]),
         ]);
-        bovidae.generate_parser();
-        //bovidae.print_action_table();
+        parser.generate_parser();
+        //parser.print_action_table();
 
         let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Last, Tok::End];
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+        assert!(parser.parse_tokens(tokens).is_ok());
 
         let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::First, Tok::End];
 
-        assert!(bovidae.parse_tokens(tokens).is_err());
+        assert!(parser.parse_tokens(tokens).is_err());
     }
 
     #[test]
-    fn it_works5() {
-        let mut bovidae = Bovidae::new();
-        let S = 0;
-        let A = 1;
-        let B = 2;
-        let b = 3;
-        let a = 4;
-        bovidae.set_prods(&vec![
-            (S, vec![A, B]),
-            (A, vec![a, A]),
-            (A, vec![]),
-            (B, vec![b, B]),
-            (B, vec![]),
+    fn simple_grammar5() {
+        let mut parser = Parseon::new();
+        parser.set_prods(&vec![
+            (Tok::S, vec![Tok::A, Tok::B]),
+            (Tok::A, vec![Tok::C, Tok::A]),
+            (Tok::A, vec![]),
+            (Tok::B, vec![Tok::D, Tok::B]),
+            (Tok::B, vec![]),
         ]);
-        bovidae.generate_parser();
+        parser.generate_parser();
         //bovidae.print_action_table();
 
-        let accept_strings: Vec<Vec<TokenID>> = vec![
-            vec![a, a, b, b],
-            vec![a, b],
-            vec![a, a],
-            vec![b, b],
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::C, Tok::C, Tok::D, Tok::D],
+            vec![Tok::C, Tok::D],
+            vec![Tok::C, Tok::C],
+            vec![Tok::D, Tok::D],
             vec![],
         ];
 
-        let reject_strings: Vec<Vec<TokenID>> = vec![
-            vec![b, a],
-            vec![a, b, a],
-            vec![a, b, a, b],
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::D, Tok::C],
+            vec![Tok::C, Tok::D, Tok::C],
+            vec![Tok::C, Tok::D, Tok::D, Tok::C],
         ];
 
         for s in accept_strings {
-            assert!(bovidae.parse_tokens(s).is_ok());
+            assert!(parser.parse_tokens(s).is_ok());
         }
 
         for s in reject_strings {
-            assert!(bovidae.parse_tokens(s).is_err());
+            assert!(parser.parse_tokens(s).is_err());
         }
     }
 
     #[test]
     fn it_works6() {
-        let mut bovidae = Bovidae::new();
+        let mut parser = Parseon::new();
         let S = 0;
         let A = 1;
         let B = 2;
@@ -923,7 +938,7 @@ mod tests {
         let b = 5;
         let c = 6;
         let x = 7;
-        bovidae.set_prods(&vec![
+        parser.set_prods(&vec![
             (S, vec![A, B, C]),
             (A, vec![a, A]),
             (A, vec![x]),
@@ -932,17 +947,17 @@ mod tests {
             (C, vec![c, C]),
             (C, vec![x]),
         ]);
-        bovidae.generate_parser();
-        bovidae.print_action_table();
+        parser.generate_parser();
+        parser.print_action_table();
 
         let tokens: Vec<TokenID> = vec![a, x, b, x, c, x];
 
-        assert!(bovidae.parse_tokens(tokens).is_ok());
+        assert!(parser.parse_tokens(tokens).is_ok());
     }
 
     #[test]
     fn it_works7() {
-        let mut bovidae = Bovidae::new();
+        let mut parser = Parseon::new();
         let Ss = 0;
         let S = 1;
         let semi = 2;
@@ -956,7 +971,7 @@ mod tests {
         let num = 10;
         let plus = 11;
         let times = 12;
-        bovidae.set_prods(&vec![
+        parser.set_prods(&vec![
             (Ss, vec![S, semi, Ss]),
             (Ss, vec![S, semi]),
 
@@ -970,7 +985,7 @@ mod tests {
             (Binop, vec![plus]),
             (Binop, vec![times]),
         ]);
-        bovidae.generate_parser();
+        parser.generate_parser();
         // bovidae.print_action_table();
 
         let tokens = vec![
@@ -982,9 +997,9 @@ mod tests {
        // assert!(bovidae.parse_tokens(tokens).is_ok());
         for tid in tokens {
             loop {
-                let parse_result = bovidae.parse(Some(tid));
+                let parse_result = parser.parse(Some(tid));
 
-                if let ParseResult::Reduction(_, _) = parse_result.ok().unwrap() {
+                if let ParseonAction::Reduction(_, _) = parse_result.ok().unwrap() {
                     continue;
                 } else {
                     break;
@@ -992,6 +1007,6 @@ mod tests {
             }
         }
 
-        assert!(bovidae.parse(None).is_ok());
+        assert!(parser.parse(None).is_ok());
     }
 }
