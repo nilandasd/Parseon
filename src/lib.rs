@@ -779,30 +779,13 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
 
 #[cfg(test)]
 mod tests {
+    use std::error;
+
     use super::*;
 
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum Tok {
-        A,
-        B,
-        C,
-        D,
-        E,
-        F,
-        T,
-        Plus,
-        Times,
-        Id,
-        Lparen,
-        Rparen,
-        S,
-        P,
-        L,
-        R,
-        First,
-        Second,
-        Last,
-        End
+        A, B, C, D, E, F, T, Plus, Times, Id, Lparen, Rparen, S, P, L, R, First, Second, Last, End
     }
 
     #[test]
@@ -861,13 +844,30 @@ mod tests {
         parser.generate_parser();
         //parser.print_action_table();
 
-        let tokens: Vec<Tok> = vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P];
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P],
+            vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P],
+            vec![Tok::P, Tok::E, Tok::P],
+            vec![Tok::T, Tok::P],
+            vec![Tok::P],
+        ];
 
-        assert!(parser.parse_tokens(tokens).is_ok());
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P, Tok::P],
+            vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::E],
+            vec![Tok::T, Tok::P, Tok::E, Tok::E, Tok::P],
+            vec![Tok::T, Tok::P, Tok::E, Tok::T],
+            vec![Tok::T, Tok::T],
+            vec![],
+        ];
 
-        let tokens: Vec<Tok> = vec![Tok::T, Tok::P, Tok::E, Tok::T, Tok::P, Tok::P];
+        for s in accept_strings {
+            assert!(parser.parse_tokens(s).is_ok());
+        }
 
-        assert!(parser.parse_tokens(tokens).is_err());
+        for s in reject_strings {
+            assert!(parser.parse_tokens(s).is_err());
+        }
     }
 
     #[test]
@@ -925,6 +925,8 @@ mod tests {
             vec![Tok::C, Tok::D],
             vec![Tok::C, Tok::C],
             vec![Tok::D, Tok::D],
+            vec![Tok::C],
+            vec![Tok::D],
             vec![],
         ];
 
@@ -1025,4 +1027,19 @@ mod tests {
 
         assert!(parser.parse(None).is_ok());
     }
+
+    /* 
+    #[test]
+    fn bad_grammar8() {
+        let mut parser = Parseon::new();
+        parser.set_prods(&vec![
+            (Tok::S, vec![Tok::A]),
+            (Tok::A, vec![Tok::S, Tok::E]),
+        ]);
+        TODO: make generate parser return an error!
+        the generated action table has a state with no shift actions
+        parser.generate_parser();
+        parser.print_action_table();
+    }
+    */
 }
