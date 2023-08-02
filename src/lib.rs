@@ -882,13 +882,29 @@ mod tests {
         parser.generate_parser();
         //parser.print_action_table();
 
-        let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Last, Tok::End];
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Last, Tok::End],
+            vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Last, Tok::First, Tok::End, Tok::Second, Tok::End],
+            vec![Tok::First, Tok::First, Tok::End, Tok::Second, Tok::End, Tok::Second, Tok::End],
+            vec![Tok::End],
+        ];
 
-        assert!(parser.parse_tokens(tokens).is_ok());
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::First, Tok::End],
+            vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::End],
+            vec![Tok::First, Tok::End, Tok::Second],
+            vec![Tok::First, Tok::Second, Tok::End],
+            vec![Tok::End, Tok::End],
+            vec![],
+        ];
 
-        let tokens = vec![Tok::First, Tok::End, Tok::Second, Tok::End, Tok::First, Tok::End];
+        for s in accept_strings {
+            assert!(parser.parse_tokens(s).is_ok());
+        }
 
-        assert!(parser.parse_tokens(tokens).is_err());
+        for s in reject_strings {
+            assert!(parser.parse_tokens(s).is_err());
+        }
     }
 
     #[test]
