@@ -776,16 +776,18 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
     }
 }
 
+// ======================================================
+// ========== TESTS =====================================
+// ======================================================
+
 
 #[cfg(test)]
 mod tests {
-    use std::error;
-
     use super::*;
 
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum Tok {
-        A, B, C, D, E, F, T, Plus, Times, Id, Lparen, Rparen, S, P, L, R, First, Second, Last, End
+        A, B, C, D, E, F, T, Plus, Times, Id, Lparen, Rparen, S, P, L, R, First, Second, Last, End, X
     }
 
     #[test]
@@ -948,29 +950,42 @@ mod tests {
     #[test]
     fn it_works6() {
         let mut parser = Parseon::new();
-        let S = 0;
-        let A = 1;
-        let B = 2;
-        let C = 3;
-        let a = 4;
-        let b = 5;
-        let c = 6;
-        let x = 7;
         parser.set_prods(&vec![
-            (S, vec![A, B, C]),
-            (A, vec![a, A]),
-            (A, vec![x]),
-            (B, vec![b, B]),
-            (B, vec![x]),
-            (C, vec![c, C]),
-            (C, vec![x]),
+            (Tok::S, vec![Tok::A, Tok::B, Tok::C]),
+            (Tok::A, vec![Tok::D, Tok::A]),
+            (Tok::A, vec![Tok::X]),
+            (Tok::B, vec![Tok::E, Tok::B]),
+            (Tok::B, vec![Tok::X]),
+            (Tok::C, vec![Tok::F, Tok::C]),
+            (Tok::C, vec![Tok::X]),
         ]);
         parser.generate_parser();
-        parser.print_action_table();
+        // parser.print_action_table();
 
-        let tokens: Vec<TokenID> = vec![a, x, b, x, c, x];
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::D, Tok::D, Tok::X, Tok::E, Tok::E, Tok::X, Tok::F, Tok::F, Tok::X],
+            vec![Tok::D, Tok::X, Tok::E, Tok::X, Tok::F, Tok::X],
+            vec![Tok::D, Tok::X, Tok::X, Tok::X],
+            vec![Tok::X, Tok::E, Tok::X, Tok::X],
+            vec![Tok::X, Tok::X, Tok::F, Tok::X],
+            vec![Tok::X, Tok::X, Tok::X],
+        ];
 
-        assert!(parser.parse_tokens(tokens).is_ok());
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::D, Tok::X, Tok::D, Tok::X, Tok::X],
+            vec![Tok::X, Tok::X, Tok::X, Tok::X],
+            vec![Tok::X, Tok::X],
+            vec![Tok::X],
+            vec![],
+        ];
+
+        for s in accept_strings {
+            assert!(parser.parse_tokens(s).is_ok());
+        }
+
+        for s in reject_strings {
+            assert!(parser.parse_tokens(s).is_err());
+        }
     }
 
     #[test]
