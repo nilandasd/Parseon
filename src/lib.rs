@@ -804,11 +804,35 @@ mod tests {
         ]);
 
         parser.generate_parser();
-        parser.print_action_table();
+        // parser.print_action_table();
 
-        let tokens: Vec<Tok> = vec![Tok::Id, Tok::Plus, Tok::Lparen, Tok::Id, Tok::Rparen];
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::Id, Tok::Times, Tok::Lparen, Tok::Id, Tok::Plus, Tok::Id, Tok::Rparen],
+            vec![Tok::Id, Tok::Times, Tok::Lparen, Tok::Id, Tok::Rparen],
+            vec![Tok::Lparen, Tok::Id, Tok::Plus, Tok::Id, Tok::Rparen],
+            vec![Tok::Id, Tok::Times, Tok::Id, Tok::Plus, Tok::Id],
+            vec![Tok::Id, Tok::Times, Tok::Id],
+            vec![Tok::Id, Tok::Plus, Tok::Id],
+            vec![Tok::Id],
+        ];
 
-        assert!(parser.parse_tokens(tokens).is_ok());
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::Id, Tok::Times, Tok::Lparen, Tok::Id, Tok::Plus, Tok::Rparen],
+            vec![Tok::Id, Tok::Times, Tok::Lparen, Tok::Id, Tok::Id, Tok::Rparen],
+            vec![Tok::Id, Tok::Times, Tok::Id, Tok::Plus, Tok::Id, Tok::Rparen],
+            vec![Tok::Times, Tok::Lparen, Tok::Id, Tok::Plus, Tok::Id, Tok::Rparen],
+            vec![Tok::Id, Tok::Times, Tok::Lparen, Tok::Id, Tok::Plus, Tok::Id],
+            vec![Tok::Id, Tok::Id],
+            vec![],
+        ];
+
+        for s in accept_strings {
+            assert!(parser.parse_tokens(s).is_ok());
+        }
+
+        for s in reject_strings {
+            assert!(parser.parse_tokens(s).is_err());
+        }
     }
 
     #[test]
@@ -816,20 +840,34 @@ mod tests {
         let mut parser = Parseon::new();
 
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::C, Tok::C]),
-            (Tok::C, vec![Tok::E, Tok::C]),
-            (Tok::C, vec![Tok::D]),
+            (Tok::S, vec![Tok::X, Tok::S, Tok::A]),
+            (Tok::S, vec![Tok::End]),
+            (Tok::A, vec![Tok::X]),
         ]);
         parser.generate_parser();
-        //parser.print_action_table();
+        // parser.print_action_table();
 
-        let tokens: Vec<Tok> = vec![Tok::E, Tok::E, Tok::E, Tok::E, Tok::E, Tok::D, Tok::E, Tok::D];
+        let accept_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::X, Tok::End, Tok::X],
+            vec![Tok::X, Tok::X, Tok::End, Tok::X, Tok::X],
+            vec![Tok::End],
+        ];
 
-        assert!(parser.parse_tokens(tokens).is_ok());
+        let reject_strings: Vec<Vec<Tok>> = vec![
+            vec![Tok::End, Tok::End],
+            vec![Tok::End, Tok::X],
+            vec![Tok::X, Tok::End],
+            vec![Tok::X],
+            vec![],
+        ];
 
-        let tokens: Vec<Tok> = vec![Tok::E,  Tok::D, Tok::E, Tok::D, Tok::E];
+        for s in accept_strings {
+            assert!(parser.parse_tokens(s).is_ok());
+        }
 
-        assert!(parser.parse_tokens(tokens).is_err());
+        for s in reject_strings {
+            assert!(parser.parse_tokens(s).is_err());
+        }
     }
 
     #[test]
