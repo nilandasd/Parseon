@@ -10,3 +10,4 @@ TODO:
   - benchmarking
   - CI for code coverage, test passing, minimum Rust version
   - error state recovery
+  - integration tests
