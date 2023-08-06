@@ -8,57 +8,59 @@ use std::collections::HashSet;
 // the user of the parser.
 pub type ProdID = usize;
 
-// Ok() type returned by the parse method
-pub enum ParseonAction<Token> {
-    Shift,
-    Reduction(Token, ProdID),
-    Accept,
-}
-
 // Err() type returned by the parse method
+#[derive(Debug)]
 pub enum ParseonError {
     PassedNonTerm,
+    // the token passed was not defined in the grammar
     BadToken,
 }
 
-pub struct Parseon<Token>
+// the Parseon struct takes 2 generic type parameters of Token and Node
+// A token is usually a enum type or usize which represent which act as
+// identifiers for every terminal and non-terminal in the defined languages grammar.
+//
+// A node has no generic contraits, but is meant to be a struct of some kindw, 
+// which can be used to build the ast
+pub struct Parseon<Token, Node>
 where Token: Copy + Clone + PartialEq + std::fmt::Debug
 {
     action_table: Vec<Vec<Action>>,// TODO: compile the action table into rust code!
     epsilon_symbols: Vec<Symbol>,
-    prods: Vec<Prod>,
+    prods: Vec<(Prod, Option<fn(&mut Vec<Node>)>)>,
     prop_table: Vec<((StateID, usize), (StateID, usize))>,
     states: Vec<State>,
     state_stack: Vec<StateID>,
-    token_ids: Vec<Token>,
+    token_ids: Vec<(Token, Option<fn(&mut Vec<Node>)>)>,
+    node_stack: Vec<Node>,
 }
 
 // ========== PUBLIC METHODS =========
 
-impl<Token> Parseon<Token>
+impl<Token, Node> Parseon<Token, Node>
 where Token: Copy + Clone + std::fmt::Debug + PartialEq
 {
     pub fn new() -> Self {
         Self {
             action_table: Vec::<Vec<Action>>::new(),
             epsilon_symbols: Vec::<Symbol>::new(),
-            prods: Vec::<Prod>::new(),
+            prods: Vec::<(Prod, Option<fn(&mut Vec<Node>)>)>::new(),
             prop_table: Vec::<((StateID, usize), (StateID, usize))>::new(),
             states: Vec::<State>::new(),
             state_stack: Vec::<StateID>::from([0]),
-            token_ids: Vec::<Token>::new(),
+            token_ids: Vec::<(Token, Option<fn(&mut Vec<Node>)>)>::new(),
+            node_stack: Vec::<Node>::new(),
         }
     }
 
-    pub fn set_prods(&mut self, prods: &Vec<(Token, Vec<Token>)>) {
+    pub fn set_prods(&mut self, prods: &Vec<(Token, &Vec<Token>, Option<fn(&mut Vec<Node>)>)>) {
         for prod in prods {
-            self.set_prod(prod.0, &prod.1);
+            self.set_prod(prod.0, prod.1, prod.2);
         }
     }
 
-    pub fn set_prod(&mut self, head: Token, body: &Vec<Token>) {
+    pub fn set_prod(&mut self, head: Token, body: &Vec<Token>, hook: Option<fn(&mut Vec<Node>)>) {
         let head_tid = self.get_or_create_token_id(head);
-
         let head_sym = Symbol::Token(head_tid);
         let mut body_sym = Vec::<Symbol>::new();
 
@@ -70,85 +72,73 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
             body_sym.push(Symbol::Epsilon);
         }
 
-        self.prods.push(Prod { head: head_sym, body: body_sym });
+        self.prods.push((Prod { head: head_sym, body: body_sym }, hook));
+    }
+
+    pub fn shift_hook(&mut self, token: Token, hook: fn(&mut Vec<Node>)) {
+        let tid = self.get_token_id(token);
+
+        self.token_ids[tid] = (token, Some(hook));
     }
 
     pub fn reset(&mut self) {
         self.state_stack = Vec::<StateID>::from([0]);
+        self.node_stack.clear();
     }
 
     pub fn parse_tokens(&mut self, tokens: Vec<Token>) -> Result<(), ParseonError> {
-        let mut idx = 0;
-
         self.reset();
 
-        while idx <= tokens.len() {
-            let token = if idx == tokens.len() {
-                None
-            } else {
-                Some(tokens[idx])
-            };
-
-            let mut reduction_flag = true;
-            while reduction_flag {
-                if let ParseonAction::Reduction(_, _) = self.parse(token)? {
-                    // do nothing
-                } else {
-                    idx += 1;
-                    reduction_flag = false;
-                }
-            }
+        for token in tokens {
+            self.parse(token)?;
         }
 
+        self.accept()?;
 
         Ok(())
     }
 
-    pub fn parse(&mut self, token_id: Option<Token>) -> Result<ParseonAction<Token>, ParseonError> {
-        // if token is a non terminal
-        //  error
+    pub fn accept(&mut self) -> Result<Option<Node>, ParseonError> {
+        let accept_tid = self.action_table[0].len() - 1;
 
-        // passing a None token ID is interpreted as passing the accept token
-        let current_state = *self.state_stack.last().unwrap();
-        let action = match token_id {
-            Some(id) => {
-                let tid = self.get_token_id(id);
-                &self.action_table[current_state][tid]
-            }
-            None => {
-                let tid = self.action_table[0].len() - 1;
-                &self.action_table[current_state][tid]
-            }
-        };
+        loop {
+            let current_state = *self.state_stack.last().unwrap();
+            let action = self.action_table[current_state][accept_tid];
 
-        match action {
-            Action::Accept => return Ok(ParseonAction::Accept), 
-            Action::Error => return Err(ParseonError::BadToken),
-            Action::Goto(_) => {
-                unreachable!("parse only accepts terminal tokens");
-            }
-            Action::Shift(sid) => {
-                self.state_stack.push(*sid);
-                return Ok(ParseonAction::Shift);
-            }
-            Action::Reduce(body_size, tid, pid) => {
-                let user_tid = self.token_ids[*tid];
-                for _ in 0..*body_size {
-                    self.state_stack.pop();
-                }
+            self.take_action(action)?;
 
-                let new_state = *self.state_stack.last().unwrap();
-                let goto_action = &self.action_table[new_state][*tid];
-
-                if let Action::Goto(state_id) = goto_action {
-                    self.state_stack.push(*state_id);
-                    return Ok(ParseonAction::Reduction(user_tid, *pid))
-                } else {
-                    // return Err(ParseonError::BadGrammar)
-                    unreachable!("hmm this might not be unreachable bad grammar is defined?")
-                }
+            if let Action::Accept = action {
+                break;
             }
         }
+
+
+        Ok(self.node_stack.pop())
+    }
+
+    // This function performs actions on the action table with the given token
+    // until a shift action is reached. If any reductions occur during this 
+    // process, the respective reduction hooks will be called. Also when the
+    // token is shifted its shift hook will be called.
+    pub fn parse(&mut self, token: Token) -> Result<(), ParseonError> {
+        let tid = self.get_token_id(token);
+
+        loop {
+            let current_state = *self.state_stack.last().unwrap();
+            let action = self.action_table[current_state][tid];
+
+            self.take_action(action)?;
+
+            if let Action::Shift(..) = action {
+                if let Some(hook) = self.token_ids[tid].1 {
+                    hook(&mut self.node_stack);
+                }
+
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     // Meant to be called after inserting all productions.
@@ -173,7 +163,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
         println!("\t\t----- ACTION TABLE -----");
 
         for tok in self.token_ids.iter() {
-            print!("\t{:?} ", tok);
+            print!("\t{:?} ", tok.0);
         }
 
         print!("\tACCEPT");
@@ -205,7 +195,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
 type TokenID = usize;
 type StateID = usize;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Action {
     Accept,
     Error,
@@ -357,21 +347,53 @@ impl Item {
     }
 }
 
-impl<Token> Parseon<Token>
+impl<Token, Node> Parseon<Token, Node>
 where Token: Copy + Clone + std::fmt::Debug + PartialEq
 {
+    fn take_action(&mut self, action: Action) -> Result<(), ParseonError> {
+        match action {
+            Action::Accept => Ok(()), 
+            Action::Error => Err(ParseonError::BadToken),
+            Action::Goto(_) => Err(ParseonError::BadToken),
+            Action::Shift(sid) => {
+                self.state_stack.push(sid);
+                Ok(())
+            }
+            Action::Reduce(body_size, tid, pid) => {
+                for _ in 0..body_size {
+                    self.state_stack.pop();
+                }
+
+                if let (_, Some(hook)) = &self.prods[pid] {
+                    hook(&mut self.node_stack);
+                }
+
+                let new_state = *self.state_stack.last().unwrap();
+                let goto_action = &self.action_table[new_state][tid];
+
+                if let Action::Goto(state_id) = goto_action {
+                    self.state_stack.push(*state_id);
+                    Ok(())
+                } else {
+                    // return Err(ParseonError::BadGrammar)
+                    unreachable!("hmm this might not be unreachable bad grammar is defined?")
+                }
+            }
+        }
+    }
+
     fn get_or_create_token_id(&mut self, id: Token) -> TokenID {
-        match self.token_ids.iter().position(|x| *x == id) {
+        match self.token_ids.iter().position(|x| x.0 == id) {
             Some(idx) => idx,
             None => {
-                self.token_ids.push(id);
+                self.token_ids.push((id, None));
                 return self.token_ids.len() - 1;
             }
         }
     }
 
     fn get_token_id(&self, id: Token) -> TokenID {
-        match self.token_ids.iter().position(|x| *x == id) {
+        match self.token_ids.iter().position(|x| x.0 == id) {
             Some(idx) => idx,
             None => { panic!("parser error"); }
         }
@@ -449,7 +471,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
     fn get_prod_id(&self, item: &Item) -> ProdID {
         let item_body: Vec<Symbol> = item.body.iter().filter(|s| **s != Symbol::Cursor).cloned().collect();
 
-        for (idx, prod) in self.prods.iter().enumerate() {
+        for (idx, (prod, _)) in self.prods.iter().enumerate() {
             if prod.body[0] == Symbol::Epsilon && item_body.len() == 0 && prod.head == item.head {
                 return idx;
             } else if prod.head == item.head && prod.body == item_body {
@@ -574,7 +596,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
         while addition_flag {
             addition_flag = false;
 
-            for prod in self.prods.iter() {
+            for (prod, _) in self.prods.iter() {
                 if self.epsilon_symbols.contains(&prod.head) {
                     continue;
                 }
@@ -664,7 +686,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
     fn create_start_state(&mut self) {
         let augmented_start_item = Item {
             head: Symbol::Start,
-            body: vec![Symbol::Cursor, self.prods[0].head],
+            body: vec![Symbol::Cursor, self.prods[0].0.head],
             la: vec![Symbol::Accept],
         };
 
@@ -758,7 +780,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
     fn get_prods(&self, head: Symbol) -> Vec<&Prod> {
         let mut result = Vec::<&Prod>::new();
 
-        for prod in self.prods.iter() {
+        for (prod, _) in self.prods.iter() {
             if prod.head == head {
                 result.push(prod);
             }
@@ -768,7 +790,7 @@ where Token: Copy + Clone + std::fmt::Debug + PartialEq
     }
 
     fn is_terminal(&self, head: Symbol) -> bool {
-        for prod in self.prods.iter() {
+        for (prod, _) in self.prods.iter() {
             if prod.head == head { return false; }
         }
 
@@ -787,20 +809,20 @@ mod tests {
 
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum Tok {
-        A, B, C, D, E, F, T, Plus, Times, Id, Lparen, Rparen, S, P, L, R, First, Second, Last, End, X
+        A, B, C, D, E, F, T, Plus, Times, Id, Lparen, Rparen, S, P, L, R, First, Second, Last, End, X, Expr, Num, Stmts, Stmt, Let, Semi, Eq
     }
 
     #[test]
     fn simple_grammar1() {
-        let mut parser = Parseon::<Tok>::new();
+        let mut parser = Parseon::<Tok, ()>::new();
 
         parser.set_prods(&vec![
-            (Tok::E, vec![Tok::T]),
-            (Tok::T, vec![Tok::T, Tok::Plus, Tok::F]),
-            (Tok::T, vec![Tok::T, Tok::Times, Tok::F]),
-            (Tok::T, vec![Tok::F]),
-            (Tok::F, vec![Tok::Lparen, Tok::E, Tok::Rparen]),
-            (Tok::F, vec![Tok::Id]),
+            (Tok::E, &vec![Tok::T], None),
+            (Tok::T, &vec![Tok::T, Tok::Plus, Tok::F], None),
+            (Tok::T, &vec![Tok::T, Tok::Times, Tok::F], None),
+            (Tok::T, &vec![Tok::F], None),
+            (Tok::F, &vec![Tok::Lparen, Tok::E, Tok::Rparen], None),
+            (Tok::F, &vec![Tok::Id], None),
         ]);
 
         parser.generate_parser();
@@ -837,12 +859,12 @@ mod tests {
 
     #[test]
     fn simple_grammar2() {
-        let mut parser = Parseon::new();
+        let mut parser = Parseon::<Tok, ()>::new();
 
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::X, Tok::S, Tok::A]),
-            (Tok::S, vec![Tok::End]),
-            (Tok::A, vec![Tok::X]),
+            (Tok::S, &vec![Tok::X, Tok::S, Tok::A], None),
+            (Tok::S, &vec![Tok::End], None),
+            (Tok::A, &vec![Tok::X], None),
         ]);
         parser.generate_parser();
         // parser.print_action_table();
@@ -872,14 +894,14 @@ mod tests {
 
     #[test]
     fn simple_grammar3() {
-        let mut parser = Parseon::new();
+        let mut parser = Parseon::<Tok, ()>::new();
 
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::L, Tok::E, Tok::R]),
-            (Tok::S, vec![Tok::R]),
-            (Tok::L, vec![Tok::T, Tok::R]),
-            (Tok::L, vec![Tok::P]),
-            (Tok::R, vec![Tok::L]),
+            (Tok::S, &vec![Tok::L, Tok::E, Tok::R], None),
+            (Tok::S, &vec![Tok::R], None),
+            (Tok::L, &vec![Tok::T, Tok::R], None),
+            (Tok::L, &vec![Tok::P], None),
+            (Tok::R, &vec![Tok::L], None),
         ]);
         parser.generate_parser();
         //parser.print_action_table();
@@ -912,12 +934,12 @@ mod tests {
 
     #[test]
     fn simple_grammar4() {
-        let mut parser = Parseon::new();
+        let mut parser = Parseon::<Tok, ()>::new();
 
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::End]),
-            (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S]),
-            (Tok::S, vec![Tok::First, Tok::S, Tok::Second, Tok::S, Tok::Last, Tok::S]),
+            (Tok::S, &vec![Tok::End], None),
+            (Tok::S, &vec![Tok::First, Tok::S, Tok::Second, Tok::S], None),
+            (Tok::S, &vec![Tok::First, Tok::S, Tok::Second, Tok::S, Tok::Last, Tok::S], None),
         ]);
         parser.generate_parser();
         //parser.print_action_table();
@@ -949,13 +971,14 @@ mod tests {
 
     #[test]
     fn simple_grammar5() {
-        let mut parser = Parseon::new();
+        let mut parser = Parseon::<Tok, ()>::new();
+
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::A, Tok::B]),
-            (Tok::A, vec![Tok::C, Tok::A]),
-            (Tok::A, vec![]),
-            (Tok::B, vec![Tok::D, Tok::B]),
-            (Tok::B, vec![]),
+            (Tok::S, &vec![Tok::A, Tok::B], None),
+            (Tok::A, &vec![Tok::C, Tok::A], None),
+            (Tok::A, &vec![], None),
+            (Tok::B, &vec![Tok::D, Tok::B], None),
+            (Tok::B, &vec![], None),
         ]);
         parser.generate_parser();
         //bovidae.print_action_table();
@@ -986,16 +1009,17 @@ mod tests {
     }
 
     #[test]
-    fn it_works6() {
-        let mut parser = Parseon::new();
+    fn simple_grammar6() {
+        let mut parser = Parseon::<Tok, ()>::new();
+
         parser.set_prods(&vec![
-            (Tok::S, vec![Tok::A, Tok::B, Tok::C]),
-            (Tok::A, vec![Tok::D, Tok::A]),
-            (Tok::A, vec![Tok::X]),
-            (Tok::B, vec![Tok::E, Tok::B]),
-            (Tok::B, vec![Tok::X]),
-            (Tok::C, vec![Tok::F, Tok::C]),
-            (Tok::C, vec![Tok::X]),
+            (Tok::S, &vec![Tok::A, Tok::B, Tok::C], None),
+            (Tok::A, &vec![Tok::D, Tok::A], None),
+            (Tok::A, &vec![Tok::X], None),
+            (Tok::B, &vec![Tok::E, Tok::B], None),
+            (Tok::B, &vec![Tok::X], None),
+            (Tok::C, &vec![Tok::F, Tok::C], None),
+            (Tok::C, &vec![Tok::X], None),
         ]);
         parser.generate_parser();
         // parser.print_action_table();
@@ -1026,60 +1050,45 @@ mod tests {
         }
     }
 
+    /*
     #[test]
-    fn it_works7() {
-        let mut parser = Parseon::new();
-        let Ss = 0;
-        let S = 1;
-        let semi = 2;
-        let lett = 3;
-        let id = 4;
-        let eq = 5;
-        let Expr = 6;
-        let l_paren = 7;
-        let r_paren = 8;
-        let Binop = 9;
-        let num = 10;
-        let plus = 11;
-        let times = 12;
+    fn integration_test1() {
+        let mut parser = Parseon::<Tok, TestNode>::new();
+
         parser.set_prods(&vec![
-            (Ss, vec![S, semi, Ss]),
-            (Ss, vec![S, semi]),
+            (Tok::Stmts, vec![Tok::Stmt, Tok::Semi, Tok::Stmts]),
+            (Tok::Stmts, vec![Tok::Stmt, Tok::Semi]),
 
-            (S, vec![lett, id, eq, Expr]),
+            (Tok::Stmt, vec![Tok::Let, Tok::Id, Tok::Eq, Tok::Expr]),
 
-            (Expr, vec![l_paren, Expr, r_paren]),
-            (Expr, vec![Expr, Binop, Expr]),
-            (Expr, vec![id]),
-            (Expr, vec![num]),
-
-            (Binop, vec![plus]),
-            (Binop, vec![times]),
+            (Tok::Expr, vec![Tok::Lparen, Tok::Expr, Tok::Rparen]),
+            (Tok::Expr, vec![Tok::Expr, Tok::Plus, Tok::Expr]),
+            (Tok::Expr, vec![Tok::Num]),
         ]);
         parser.generate_parser();
-        // bovidae.print_action_table();
+        // parser.print_action_table();
 
         let tokens = vec![
+            /*
             lett, id, eq, num, plus, l_paren, num, times, num, r_paren, semi, // let id = 1 + (2 * 3);
             lett, id, eq, l_paren, num, times, id, r_paren, plus, num, semi, // let id = (1 * id) + 2;
             lett, id, eq, id, semi, // let id = id;
+                                    // */
         ];
 
-       // assert!(bovidae.parse_tokens(tokens).is_ok());
-        for tid in tokens {
-            loop {
-                let parse_result = parser.parse(Some(tid));
+        // assert!(bovidae.parse_tokens(tokens).is_ok());
+        let mut idx = 0;
+        while idx <= tokens.len() {
+            let token = if idx == tokens.len() {
+                None
+            } else {
+                Some(tokens[idx])
+            };
 
-                if let ParseonAction::Reduction(_, _) = parse_result.ok().unwrap() {
-                    continue;
-                } else {
-                    break;
-                }
-            }
+            parser.parse(token);
         }
-
-        assert!(parser.parse(None).is_ok());
     }
+*/
 
     /* 
     #[test]
@@ -1095,4 +1104,71 @@ mod tests {
         parser.print_action_table();
     }
     */
+
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Token {
+        LeftParen,
+        RightParen,
+        Expr,
+        Plus,
+        Num,
+    }
+
+    struct Node {
+        token: Token,
+        children: Vec<Node>,
+    }
+
+    #[test]
+    fn example_usage1() {
+        let mut parser = Parseon::<Token, Node>::new();
+
+        fn addition_hook(ast_stack: &mut Vec<Node>) {
+            let left_expr = ast_stack.pop().unwrap();
+            let right_expr = ast_stack.pop().unwrap();
+            let node = Node {
+                token: Token::Plus,
+                children: vec![left_expr, right_expr],
+            };
+
+            ast_stack.push(node);
+        }
+
+        fn shift_num(ast_stack: &mut Vec<Node>) {
+            let node = Node {
+                token: Token::Num,
+                children: vec![],
+            };
+
+            ast_stack.push(node);
+        }
+
+        parser.set_prods(&vec![
+            (Token::Expr, &vec![Token::LeftParen, Token::Expr, Token::RightParen], None),
+            (Token::Expr, &vec![Token::Expr, Token::Plus, Token::Expr], Some(addition_hook)),
+            (Token::Expr, &vec![Token::Num], None),
+        ]);
+
+        parser.shift_hook(Token::Num, shift_num);
+        
+        parser.generate_parser();
+
+        let simple_expr = vec![Token::Num, Token::Plus, Token::Num];
+
+        for token in simple_expr {
+            assert!(parser.parse(token).is_ok());
+        }
+
+        let root_node = parser.accept().unwrap().unwrap();
+
+        let left_expr = &root_node.children[0];
+        let right_expr = &root_node.children[1];
+
+        assert!(root_node.token == Token::Plus);
+        assert!(root_node.children.len() == 2);
+        assert!(left_expr.token == Token::Num);
+        assert!(left_expr.children.len() == 0);
+        assert!(right_expr.token == Token::Num);
+        assert!(right_expr.children.len() == 0);
+    }
 }
